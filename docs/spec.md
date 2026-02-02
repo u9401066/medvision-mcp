@@ -2841,29 +2841,28 @@ Phase 3 (病理):
 └── UNI2-h             # High-accuracy Tiles
 ```
 
-### H.4 已驗證模型狀態 (2025-06 實測)
+### H.4 已驗證模型狀態 (2026-02 實測)
 
-> **測試環境**：Tesla V100-SXM2-32GB, Python 3.10, PyTorch 2.x, CUDA
+> **測試環境**：Tesla V100-SXM2-32GB, Python 3.12, PyTorch 2.9, CUDA 12.8
 
 | 模型 | 狀態 | 工具類別 | 說明 |
 |:-----|:-----|:---------|:-----|
+| **RAD-DINO** | ✅ Ready | Visual RAG | microsoft/rad-dino, 346MB, 768-dim embedding |
+| **FAISS** | ✅ Ready | Visual RAG | faiss-cpu, 向量檢索，L2 距離 |
 | **DenseNet-121** | ✅ Ready | 分類 | torchxrayvision，18 種 CXR 病理 |
 | **PSPNet** | ✅ Ready | 分割 | torchxrayvision，14 種器官分割 |
 | **DICOM Processor** | ✅ Ready | 影像處理 | pydicom，Window/Level 調整 |
 | **ViT-BERT Report Generator** | ✅ Ready | 報告生成 | IAMJB/radiology_report_generation，已下載權重 |
-| **CheXagent-2-3b VQA** | ⚠️ 環境問題 | VQA | 需安裝 `libGL.so.1` (albumentations 依賴) |
+| **Ollama** | ✅ Ready | LLM 服務 | v0.15.4，llava:7b 已下載，GPU 模式 |
+| **CheXagent-2-3b VQA** | ⚠️ 下載慢 | VQA | HuggingFace 下載速度不足，建議用 Ollama 替代 |
 | **LLaVA-Med-1.5-7B** | ❓ 未測試 | VQA | 需 vLLM 服務或直接載入 |
 | **MAIRA-2** | ❓ 未測試 | Grounding | Microsoft Phrase Grounding |
-| **Roentgen (ChestXRayGeneratorTool)** | ❓ 未測試 | 生成 | 需本地 Roentgen 權重 |
+| **Roentgen** | ❓ 未測試 | 生成 | 需本地 Roentgen 權重 |
 
-**修復 CheXagent 環境問題**：
-```bash
-# Ubuntu/Debian
-sudo apt-get install libgl1-mesa-glx
-
-# 或使用 headless 版本 (如果 albumentations 支援)
-pip install opencv-python-headless
-```
+**Visual RAG 混合模式 (Mode B) 已驗證可用**：
+- RAD-DINO 編碼：~2秒/張 (GPU)
+- FAISS 檢索：<1ms (4 張 demo)
+- 建議用於快速原型開發
 
 ---
 
