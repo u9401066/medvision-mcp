@@ -45,6 +45,9 @@ dependencies = [
     "scikit-image>=0.18.0",
     "opencv-python>=4.8.0",
     
+    # Visual RAG
+    "faiss-cpu>=1.7.0",
+    
     # Agent Framework (for Phase 3+)
     "langchain-core>=0.1.0",
     "langgraph>=0.0.10",
