@@ -1,6 +1,6 @@
 # MedVision MCP v2 架構規格書
 
-> 版本: 0.6.0  
+> 版本: 0.6.1  
 > 日期: 2026-02-02  
 > 狀態: Draft
 
@@ -8,6 +8,7 @@
 
 | 版本 | 日期 | 變更 |
 |:-----|:-----|:-----|
+| 0.6.1 | 2026-02-02 | 修正 Section 2.3 編號衝突；ROADMAP 改寫為 Visual RAG Mode B 導向；模型下載量加註抓取日期；更新已決定事項 |
 | 0.6.0 | 2026-02-02 | 新增 Visual RAG 混合模式 (Mode B)：RAD-DINO + FAISS + DenseNet，`search_similar_cases`, `analyze_with_rag` 等工具 |
 | 0.5.0 | 2026-02-02 | 新增互動診斷流程設計、Canvas 標記類型定義、A2A vs 純 MCP 雙模式、已驗證模型狀態表 |
 | 0.4.0 | 2026-02-02 | 架構重構：MCP Server + Multi-Model Tools + 內建 Medical Agent (A2A)；新增 Canvas 繪畫工作區規格 |
@@ -154,7 +155,7 @@ MedVision MCP v1 是一個基於 LangGraph ReAct 架構的醫療影像分析 Age
 | **Canvas UI** | 繪畫工作區，用戶與 Agent 互動 | **React + Fabric.js** |
 | **Event Bus** | 工具執行結果推送到 UI | WebSocket / MCP Resources |
 
-### 2.3 使用模式
+### 2.2.1 使用模式
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -1251,6 +1252,8 @@ Agent: export_study(format="json")
 | Interactive Segmentation | 2 | All |
 | Legacy (v1) | 4 | CXR |
 
+> **📊 資料抓取日期**：下列模型下載量統計來自 HuggingFace，抓取日期為 **2026-02**。實際數據可能有變動。
+
 ### 7.2 Radiology VLM (視覺語言模型)
 
 | 模型 | 來源 | 參數量 | 功能 | 下載量 | HuggingFace |
@@ -1847,236 +1850,142 @@ async with Client("http://localhost:8000") as client:
 
 ## 10. 開發階段 (ROADMAP)
 
-### MVP 定義 (Week 1-4)
+> **🔄 策略調整 (2026-02)**：原計畫依賴 CheXagent VLM，因下載速度問題 (~315 小時)，改採 **Visual RAG Mode B** 策略：輕量模型 + 檢索。
 
-> **MVP 目標**：可運行的 MCP Server + 基本 Canvas UI，能完成一次完整的 CXR 分析流程
+### 10.1 當前狀態 (2026-02-02)
 
-```
-MVP 必須功能：
-✅ MCP Server 啟動，接受工具調用
-✅ 1 個影像分析工具 (analyze_image)
-✅ 1 個 VQA 工具 (ask_about_image)
-✅ Canvas UI 顯示影像 + 繪製區域
-✅ 區域選擇 → 分析 → 結果顯示 完整流程
+| 模組 | 狀態 | 說明 |
+|:-----|:-----|:-----|
+| **RAD-DINO** | ✅ Ready | 346MB, 768-dim embedding, ~2s/image |
+| **FAISS** | ✅ Ready | L2 向量檢索, <1ms |
+| **DenseNet-121** | ✅ Ready | 18 類 CXR 分類 |
+| **PSPNet** | ✅ Ready | 14 器官分割 |
+| **Ollama + LLaVA** | ✅ Ready | 文字模式可用, 視覺模式待修復 |
+| **DICOM Processor** | ✅ Ready | pydicom + Window/Level |
+| **Report Generator** | ✅ Ready | ViT-BERT 權重已下載 |
+| **MCP Server** | ❌ 未實作 | FastMCP 框架待建立 |
+| **Canvas UI** | ❌ 未實作 | React + Fabric.js |
 
-MVP 不包含：
-❌ 內建 Agent (Phase 2 再做)
-❌ VS Code Extension (Phase 3 再做)
-❌ 多模態支援 (先 CXR only)
-❌ Export 功能
-❌ Medical-SAM3 (可用 mock 替代)
-```
+### 10.2 新版 MVP 定義 (Visual RAG Mode B)
 
----
-
-### Worktree 並行開發策略 🌳
-
-> 多個 Copilot Agent 協作，使用 Git Worktree 分離開發
+> **MVP 目標**：可運行的 MCP Server + Visual RAG 核心流程
 
 ```
-main (穩定版)
-│
-├── worktree/mcp-server      # Agent A: MCP Server + Tools
-├── worktree/canvas-ui       # Agent B: React Canvas UI  
-├── worktree/models          # Agent C: AI 模型封裝
-└── worktree/integration     # 整合測試 (定期 merge)
+MVP 核心功能 (Phase 1)：
+✅ MCP Server 啟動 (FastMCP + stdio)
+✅ Visual RAG Pipeline:
+   ├─ RAD-DINO 影像編碼
+   ├─ FAISS 相似案例檢索
+   └─ DenseNet 快速分類
+✅ 核心 Tools:
+   ├─ analyze_image (分類)
+   ├─ search_similar_cases (RAG)
+   └─ analyze_with_rag (混合)
+✅ SQLite Session 管理
+
+MVP 延後功能：
+❌ Canvas UI (Phase 2)
+❌ 互動分割 SAM3 (Phase 3)
+❌ VS Code Extension (Phase 4)
+❌ 內建 Agent A2A (Phase 3)
 ```
 
-#### 模組邊界與責任
+### 10.3 Phase 定義
 
-| Worktree | 負責範圍 | 關鍵產出 | 依賴 |
-|:---------|:---------|:---------|:-----|
-| `mcp-server` | MCP Server 框架、Session 管理、工具註冊 | `medvision-mcp/mcp_server/` | 無 |
-| `canvas-ui` | React Canvas UI、MCP Client、繪圖工具 | `medvision-mcp-ui/` | MCP 介面契約 |
-| `models` | AI 模型封裝、推理後端、Model Registry | `medvision-mcp/models/` | 無 |
-| `integration` | 整合測試、E2E 流程、CI/CD | `tests/` | 全部 |
-
-#### 介面契約 (Interface Contracts)
-
-**各 Worktree 必須遵守的介面定義，確保並行開發後可順利整合：**
-
-```python
-# contracts/mcp_tools.py - MCP Server 與 Canvas UI 共用
-
-from pydantic import BaseModel
-from typing import Literal, Optional, List, Dict, Any
-
-# === Session 相關 ===
-class CreateSessionRequest(BaseModel):
-    name: Optional[str] = None
-
-class CreateSessionResponse(BaseModel):
-    session_id: str
-    ui_url: Optional[str] = None
-
-# === 分析相關 ===
-class AnalyzeImageRequest(BaseModel):
-    session_id: str
-    image_id: Optional[str] = None
-    classify: bool = True
-    detect: bool = False
-    segment: bool = False
-    generate_report: bool = False
-
-class AnalyzeImageResponse(BaseModel):
-    classification: Optional[Dict[str, float]] = None
-    detections: List[Dict[str, Any]] = []
-    report: Optional[str] = None
-
-# === 區域選擇 ===
-class Region(BaseModel):
-    type: Literal["bbox", "polygon", "point"]
-    coordinates: Any  # bbox: [x1,y1,x2,y2], polygon: [[x,y],...], point: [x,y]
-    format: Literal["pixel", "relative"] = "pixel"
-
-class AnalyzeRegionRequest(BaseModel):
-    session_id: str
-    region: Region
-    question: Optional[str] = None
-    actions: List[Literal["describe", "segment", "measure"]] = ["describe"]
-
-class AnalyzeRegionResponse(BaseModel):
-    description: Optional[str] = None
-    segmentation: Optional[Dict[str, Any]] = None  # mask 資訊
-    annotation_id: Optional[str] = None
-
-# === Canvas 同步 ===
-class CanvasLayer(BaseModel):
-    id: str
-    type: Literal["segmentation", "bbox", "annotation", "user_drawing"]
-    visible: bool = True
-    data: Dict[str, Any]
-
-class PushToCanvasRequest(BaseModel):
-    session_id: str
-    action: Literal["add_layer", "update_layer", "remove_layer", "highlight"]
-    payload: Dict[str, Any]
-```
-
-```typescript
-// contracts/mcp-client.ts - Canvas UI 端的 MCP 調用介面
-
-interface MCPClient {
-  // Session
-  createSession(name?: string): Promise<{ session_id: string; ui_url?: string }>;
-  
-  // Analysis
-  analyzeImage(params: {
-    session_id: string;
-    image_id?: string;
-    classify?: boolean;
-    detect?: boolean;
-  }): Promise<AnalyzeImageResponse>;
-  
-  analyzeRegion(params: {
-    session_id: string;
-    region: Region;
-    question?: string;
-    actions?: ('describe' | 'segment' | 'measure')[];
-  }): Promise<AnalyzeRegionResponse>;
-  
-  // Subscription (MCP Resources)
-  subscribe(resource: string, callback: (data: any) => void): () => void;
-}
-
-// Canvas 必須實作的事件處理
-interface CanvasEventHandlers {
-  onRegionDrawn: (region: Region) => void;
-  onImageUploaded: (file: File) => void;
-  onLayerReceived: (layer: CanvasLayer) => void;
-}
-```
-
----
-
-### Phase 1: Core MCP Server + Tools (Week 1-2)
-
-**Worktree: `mcp-server` + `models` 並行**
+#### Phase 1: Visual RAG Core (Week 1-2)
 
 ```
-mcp-server 任務：
-├── [ ] FastMCP Server 設置
-├── [ ] SQLite + SQLAlchemy 模型
-├── [ ] Session CRUD 工具
-├── [ ] Tool 註冊框架
-└── [ ] Mock 模型回傳 (先不接真模型)
-
-models 任務：
-├── [ ] Model Registry 架構
-├── [ ] DenseNet 分類器封裝
-├── [ ] CheXagent VQA 封裝
-├── [ ] PyTorch 推理後端
-└── [ ] 統一輸入/輸出格式
+優先任務：
+├── [x] RAD-DINO + FAISS 驗證 (已完成)
+├── [x] DenseNet + PSPNet 驗證 (已完成)
+├── [ ] FastMCP Server 框架
+│   ├── 專案結構 (src/medvision_mcp/)
+│   ├── MCP stdio transport
+│   └── Tool 註冊機制
+├── [ ] 核心 Tools 實作
+│   ├── create_study_session
+│   ├── add_image_to_session
+│   ├── analyze_image (DenseNet)
+│   ├── search_similar_cases (RAD-DINO + FAISS)
+│   └── analyze_with_rag (混合)
+├── [ ] Reference Database
+│   ├── SQLite schema
+│   ├── EURORAD 案例匯入
+│   └── Embedding 預計算
+└── [ ] 基本測試 + Claude Desktop 整合
 ```
 
-### Phase 2: Canvas UI + 整合 (Week 3-4)
-
-**Worktree: `canvas-ui` + `integration`**
+#### Phase 2: Canvas UI (Week 3-4)
 
 ```
-canvas-ui 任務：
-├── [ ] React + Vite 專案設置
+任務：
+├── [ ] React + Vite 專案
 ├── [ ] Fabric.js Canvas 組件
-├── [ ] MCP Client 實現
-├── [ ] 繪圖工具 (BBox, Polygon, Point)
-├── [ ] 分析結果視覺化
-└── [ ] 基本 UI 佈局
-
-integration 任務：
-├── [ ] mcp-server + models 整合
-├── [ ] Docker Compose 設置
-├── [ ] E2E 測試框架
-├── [ ] CI Pipeline
-└── [ ] MVP Demo 準備
+├── [ ] MCP Client (stdio)
+├── [ ] 基本繪圖工具 (bbox, polygon)
+├── [ ] analyze_selected_region Tool
+└── [ ] 區域 → RAG 查詢完整流程
 ```
 
-### Phase 3: Medical Agent + SAM3 (Week 5-6)
+#### Phase 3: Agent + SAM3 (Week 5-6)
 
-- [ ] LangGraph Agent 架構
-- [ ] Medical-SAM3 整合
-- [ ] A2A 介面實現
-- [ ] 多輪對話支援
-
-### Phase 4: VS Code Extension (Week 7-8)
-
-- [ ] Extension 專案設置
-- [ ] WebView 整合 Canvas UI
-- [ ] 命令整合
-
-### Phase 5: Polish & Release (Week 9-10)
-
-- [ ] Export 功能
-- [ ] 文檔完善
-- [ ] 效能優化
-
----
-
-### Worktree 開發流程
-
-```bash
-# 1. 建立 worktrees
-git worktree add ../medvision-mcp-mcp-server -b feature/mcp-server
-git worktree add ../medvision-mcp-canvas-ui -b feature/canvas-ui
-git worktree add ../medvision-mcp-models -b feature/models
-
-# 2. 各 Agent 在自己的 worktree 開發
-cd ../medvision-mcp-mcp-server
-# Agent A 開發 MCP Server...
-
-# 3. 定期整合到 integration branch
-git checkout main
-git merge feature/mcp-server feature/models  # 解決衝突
-
-# 4. 跑整合測試
-pytest tests/integration/
+```
+任務：
+├── [ ] Medical-SAM3 整合
+├── [ ] invoke_medical_agent Tool
+├── [ ] LangGraph Agent 架構
+├── [ ] push_to_canvas 雙向互動
+└── [ ] 多輪對話支援
 ```
 
-### 協作規範
+#### Phase 4: VS Code Extension (Week 7-8)
 
-1. **介面優先**：先完成 `contracts/` 目錄的介面定義再開發
-2. **Mock 替代**：模組尚未完成時，使用 mock 回傳
-3. **每日整合**：每天至少一次 merge 到 integration branch
-4. **契約不可破**：介面契約變更需要所有 Agent 同意
+```
+任務：
+├── [ ] Extension 專案結構
+├── [ ] WebView 整合 Canvas
+├── [ ] 命令註冊
+└── [ ] 發布準備
+```
+
+#### Phase 5: Polish (Week 9-10)
+
+```
+任務：
+├── [ ] Export 功能 (PDF, JSON)
+├── [ ] 效能優化
+├── [ ] 文檔完善
+└── [ ] 公開發布
+```
+
+### 10.4 技術依賴圖
+
+```
+               ┌─────────────────────────────────────────────────────┐
+               │                   Phase 1 (Core)                    │
+               │                                                     │
+               │  ┌─────────┐   ┌─────────┐   ┌─────────────────┐   │
+               │  │RAD-DINO │   │ FAISS   │   │ DenseNet/PSPNet │   │
+               │  │ (✅)    │   │ (✅)    │   │     (✅)        │   │
+               │  └────┬────┘   └────┬────┘   └────────┬────────┘   │
+               │       │             │                  │            │
+               │       └──────┬──────┴──────────┬───────┘            │
+               │              │                 │                    │
+               │        ┌─────▼─────┐     ┌─────▼─────┐              │
+               │        │ MCP Tools │     │  SQLite   │              │
+               │        │  (待實作) │     │  (待實作) │              │
+               │        └─────┬─────┘     └─────┬─────┘              │
+               │              │                 │                    │
+               │        ┌─────▼─────────────────▼─────┐              │
+               │        │      FastMCP Server         │              │
+               │        │         (待實作)            │              │
+               │        └─────────────┬───────────────┘              │
+               └───────────────────────┼─────────────────────────────┘
+                                       │ stdio
+                       ┌───────────────▼───────────────┐
+                       │       Claude Desktop          │
+                       └───────────────────────────────┘
+```
 
 ---
 
@@ -2085,75 +1994,53 @@ pytest tests/integration/
 | 項目 | 決定 | 備註 |
 |:-----|:-----|:-----|
 | **整體架構** | MCP Server + Multi-Model Tools + 內建 Agent | A2A-like 設計 |
+| **核心策略** | **Visual RAG Mode B** | RAD-DINO + FAISS + DenseNet (2026-02 決議) |
 | **Agent 設計** | 內建 MedVision MCP Medical Agent | 使用 MCP Tools，支援外部 Agent 委託 |
 | **Canvas UI** | React + Fabric.js 繪畫工作區 | 透過 MCP Protocol 與 Agent 互動 |
-| **Worktree 協作** | 4 個 Worktree 並行開發 | mcp-server, canvas-ui, models, integration |
-| **介面契約** | `contracts/` 目錄 | Python + TypeScript 雙語言 |
 | Session 持久化 | **SQLite** | 輕量、無依賴、可持久化 |
-| GPU 推理 | **vLLM + Ollama** | vLLM 高效、Ollama 泛用 |
+| GPU 推理 | **Ollama (主) + PyTorch 直接載入** | vLLM 備選 (需大模型時) |
 | 互動分割 | **Medical-SAM3** | 醫療專用微調版 |
 | UI 框架 | **React + Fabric.js** | VS Code WebView 相容 |
+| MCP Transport | **stdio 優先** | 後續可加 HTTP/SSE |
+| MVP 模型 | **DenseNet + RAG + Ollama** | 避免 CheXagent 下載瓶頸 |
+| 影像編碼器 | **RAD-DINO** | 768-dim, 346MB, 已驗證 |
+| 向量檢索 | **FAISS (CPU)** | L2 距離, <1ms |
 
 ## 12. 待討論事項
 
-### MVP 優先 (Phase 1-2)
-
-1. **MVP 模型選擇**：
-   - Phase 1 先用 DenseNet 分類 + Mock VQA？
-   - 還是直接整合 CheXagent-2？
-   - **建議**：先 DenseNet + Mock，降低首次整合風險
-
-2. **MCP Transport**：
-   - stdio (適合 Claude Desktop) vs HTTP/SSE (適合 Web)?
-   - **建議**：先實作 stdio，後續加 HTTP
-
-3. **Canvas UI 框架**：
-   - 純 Fabric.js 還是 Konva.js？
-   - **建議**：Fabric.js，文檔/社群更完整
-
-### 多 Agent 協作
-
-4. **Worktree 同步頻率**：
-   - 每日整合 vs 每 PR 整合？
-   - **建議**：每日至少一次，避免大衝突
-
-5. **介面契約版本**：
-   - 需要 semver 嗎？
-   - **建議**：MVP 階段不需要，穩定後再加
-
 ### Post-MVP
 
-6. **內建 Agent 實作**：
+1. **內建 Agent 實作**：
    - 使用 LangGraph ReAct 還是簡單的 Chain？
-   - Agent 底層模型：使用 CheXagent-2 還是 Claude/GPT API？
+   - Agent 底層模型：使用 Ollama LLaVA 還是 Claude/GPT API？
    
-7. **Canvas 互動細節**：
+2. **Canvas 互動細節**：
    - 多選區域同時分析？
    - 是否支援連續繪圖模式？
 
-8. **A2A 協議**：
+3. **A2A 協議**：
    - 需要標準化的 Agent 委託格式嗎？
    - 是否需要 Agent 間的狀態共享？
 
-9. **多用戶支援**：是否需要用戶認證？Token-based or Session-based?
+4. **多用戶支援**：是否需要用戶認證？Token-based or Session-based?
 
-10. **新影像類型模型**：
+5. **新影像類型模型**：
     - KUB: 使用 LLaVA-Med，還是需要專門訓練？
     - EKG: 需要專門的 ECG 分析模型嗎？(如 ECG-FM)
 
-11. **DICOM SR 標準**：要支援哪些 template？TID 1500 (Measurement Report)?
+6. **DICOM SR 標準**：要支援哪些 template？TID 1500 (Measurement Report)?
 
-12. **VS Code Extension 發布**：
+7. **VS Code Extension 發布**：
     - 公開 Marketplace 還是私有？
     - 需要簽署嗎？
 
-13. **vLLM 部署**：
-    - 單一進程多模型 vs 多進程？
-    - 需要 Ray 進行分散式嗎？
-
-14. **影像儲存**：
+8. **影像儲存**：
     - 影像存在本地 vs 雲端？
     - 需要壓縮/縮圖嗎？
+
+9. **Ollama 視覺模式**：
+    - llava:7b runner 錯誤待修復
+    - 是否改用 vLLM 或直接載入模型？
 
 ---
 
