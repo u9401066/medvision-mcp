@@ -1,4 +1,4 @@
-# MedRAX v2 架構規格書
+# MedVision MCP v2 架構規格書
 
 > 版本: 0.4.0  
 > 日期: 2026-02-02  
@@ -20,17 +20,17 @@
 
 ### 1.1 背景
 
-MedRAX v1 是一個基於 LangGraph ReAct 架構的醫療影像分析 Agent，整合了多個 AI 模型作為工具。隨著 AI Agent 生態演進（MCP Protocol、A2A、長思考 Agent），需要重新設計架構以提升互操作性和用戶體驗。
+MedVision MCP v1 是一個基於 LangGraph ReAct 架構的醫療影像分析 Agent，整合了多個 AI 模型作為工具。隨著 AI Agent 生態演進（MCP Protocol、A2A、長思考 Agent），需要重新設計架構以提升互操作性和用戶體驗。
 
 ### 1.2 核心架構理念
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│                    MedRAX = MCP Server + Agent                  │
+│                    MedVision MCP = MCP Server + Agent                  │
 ├─────────────────────────────────────────────────────────────────┤
 │                                                                 │
 │   ┌───────────────────┐     ┌───────────────────────────────┐  │
-│   │   MCP Tools       │     │   MedRAX Agent (Optional)     │  │
+│   │   MCP Tools       │     │   MedVision MCP Agent (Optional)     │  │
 │   │   ─────────────   │     │   ─────────────────────────   │  │
 │   │   • VQA           │◄────│   • 使用 MCP Tools            │  │
 │   │   • Segmentation  │     │   • 理解醫療影像語義          │  │
@@ -87,11 +87,11 @@ MedRAX v1 是一個基於 LangGraph ReAct 架構的醫療影像分析 Agent，�
                                     │ MCP Protocol
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                          MedRAX MCP Server                                  │
+│                          MedVision MCP MCP Server                                  │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │   ┌─────────────────────────────────────────────────────────────────────┐   │
-│   │                    MedRAX Medical Agent (Optional)                  │   │
+│   │                    MedVision MCP Medical Agent (Optional)                  │   │
 │   │   ─────────────────────────────────────────────────────────────────  │   │
 │   │   • ReAct / Chain-of-Thought 推理                                   │   │
 │   │   • 醫療影像語義理解                                                  │   │
@@ -145,7 +145,7 @@ MedRAX v1 是一個基於 LangGraph ReAct 架構的醫療影像分析 Agent，�
 | 組件 | 職責 | 技術選型 |
 |:-----|:-----|:---------|
 | **MCP Server** | 暴露所有工具為 MCP Protocol | FastMCP / mcp-python |
-| **MedRAX Agent** | 內建醫療影像分析 Agent，使用 MCP Tools | LangGraph / ReAct |
+| **MedVision MCP Agent** | 內建醫療影像分析 Agent，使用 MCP Tools | LangGraph / ReAct |
 | **Multi-Model Tools** | AI 模型封裝為獨立 MCP Tools | VQA, Segment, Classify 等 |
 | **Session Store** | 管理分析會話狀態 | **SQLite** (持久化) |
 | **Model Registry** | 管理 AI 模型實例 | **vLLM + Ollama** |
@@ -165,15 +165,15 @@ MedRAX v1 是一個基於 LangGraph ReAct 架構的醫療影像分析 Agent，�
 │  │ (External)   │◀──────────────────── │ (VQA, Segment..) │                 │
 │  └──────────────┘                       └──────────────────┘                 │
 │                                                                             │
-│  模式 2: 外部 Agent 委託 MedRAX Agent (A2A)                                   │
+│  模式 2: 外部 Agent 委託 MedVision MCP Agent (A2A)                                   │
 │  ┌──────────────┐     MCP Protocol     ┌──────────────────┐     Internal    │
-│  │ Claude/GPT   │ ────────────────────▶│ MedRAX Agent     │────────────────▶│
+│  │ Claude/GPT   │ ────────────────────▶│ MedVision MCP Agent     │────────────────▶│
 │  │ (External)   │◀──────────────────── │ (Medical Expert) │      Tools      │
 │  └──────────────┘                       └──────────────────┘                 │
 │                                                                             │
 │  模式 3: Canvas UI 直接互動 (獨立使用)                                        │
 │  ┌──────────────┐     MCP Protocol     ┌──────────────────┐     Internal    │
-│  │ User +       │ ────────────────────▶│ MedRAX Agent     │────────────────▶│
+│  │ User +       │ ────────────────────▶│ MedVision MCP Agent     │────────────────▶│
 │  │ Canvas UI    │◀──────────────────── │ (Medical Expert) │      Tools      │
 │  └──────────────┘                       └──────────────────┘                 │
 │                                                                             │
@@ -717,7 +717,7 @@ def get_visualization(
 
 ### 4.6 Agent Tools (A2A)
 
-這些工具用於外部 Agent 委託 MedRAX Agent 執行任務。
+這些工具用於外部 Agent 委託 MedVision MCP Agent 執行任務。
 
 #### `invoke_medical_agent`
 
@@ -730,10 +730,10 @@ def invoke_medical_agent(
     mode: Literal["auto", "interactive", "step_by_step"] = "auto"
 ) -> Dict:
     """
-    委託 MedRAX Medical Agent 執行醫療影像分析任務
+    委託 MedVision MCP Medical Agent 執行醫療影像分析任務
     
     這是 A2A (Agent-to-Agent) 的核心介面。外部 Agent (如 Claude) 
-    可以透過此工具委託 MedRAX Agent 執行複雜的醫療影像分析。
+    可以透過此工具委託 MedVision MCP Agent 執行複雜的醫療影像分析。
     
     Args:
         session_id: 會話 ID
@@ -764,7 +764,7 @@ def invoke_medical_agent(
 @mcp.tool
 def get_agent_capabilities() -> Dict:
     """
-    取得 MedRAX Agent 的能力清單
+    取得 MedVision MCP Agent 的能力清單
     
     Returns:
         capabilities: Agent 可執行的任務類型
@@ -908,7 +908,7 @@ Canvas 繪畫工作區是用戶與 Agent 互動的核心介面。所有互動都
 ```
 React + TypeScript
 ├── Fabric.js          # Canvas 繪圖/標註
-├── MCP Client         # 與 MedRAX Server 通訊
+├── MCP Client         # 與 MedVision MCP Server 通訊
 ├── React Query        # 資料同步
 ├── Zustand            # 狀態管理
 ├── Tailwind CSS       # 樣式
@@ -919,7 +919,7 @@ React + TypeScript
 
 ```
 ┌────────────────┐          MCP Protocol           ┌────────────────┐
-│   Canvas UI    │ ◄───────────────────────────────▶│  MedRAX Server │
+│   Canvas UI    │ ◄───────────────────────────────▶│  MedVision MCP Server │
 └───────┬────────┘                                  └───────┬────────┘
         │                                                   │
         │  1. User draws region on canvas                   │
@@ -1395,7 +1395,7 @@ pathology = [
 ### 8.2 目錄結構
 
 ```
-medrax/
+medvision-mcp/
 ├── mcp_server/
 │   ├── __init__.py
 │   ├── server.py              # MCP Server 入口
@@ -1460,14 +1460,14 @@ medrax/
 │   └── export.py              # 匯出功能
 │
 ├── db/
-│   └── medrax.db              # SQLite 資料庫
+│   └── medvision-mcp.db              # SQLite 資料庫
 │
 └── legacy/                    # 保留舊版相容
     ├── agent.py
     └── tools.py
 
 # VS Code Extension (獨立專案)
-medrax-vscode/
+medvision-mcp-vscode/
 ├── package.json
 ├── src/
 │   ├── extension.ts           # Extension 入口
@@ -1495,7 +1495,7 @@ server:
   ui_port: 7860
 
 database:
-  url: "sqlite:///db/medrax.db"
+  url: "sqlite:///db/medvision-mcp.db"
   echo: false  # SQL logging
 
 inference:
@@ -1662,9 +1662,9 @@ async with Client("http://localhost:8000") as client:
 // claude_desktop_config.json
 {
   "mcpServers": {
-    "medrax": {
+    "medvision-mcp": {
       "command": "python",
-      "args": ["-m", "medrax.mcp_server"],
+      "args": ["-m", "medvision-mcp.mcp_server"],
       "env": {
         "MODEL_DIR": "/model-weights"
       }
@@ -1716,9 +1716,9 @@ main (穩定版)
 
 | Worktree | 負責範圍 | 關鍵產出 | 依賴 |
 |:---------|:---------|:---------|:-----|
-| `mcp-server` | MCP Server 框架、Session 管理、工具註冊 | `medrax/mcp_server/` | 無 |
-| `canvas-ui` | React Canvas UI、MCP Client、繪圖工具 | `medrax-ui/` | MCP 介面契約 |
-| `models` | AI 模型封裝、推理後端、Model Registry | `medrax/models/` | 無 |
+| `mcp-server` | MCP Server 框架、Session 管理、工具註冊 | `medvision-mcp/mcp_server/` | 無 |
+| `canvas-ui` | React Canvas UI、MCP Client、繪圖工具 | `medvision-mcp-ui/` | MCP 介面契約 |
+| `models` | AI 模型封裝、推理後端、Model Registry | `medvision-mcp/models/` | 無 |
 | `integration` | 整合測試、E2E 流程、CI/CD | `tests/` | 全部 |
 
 #### 介面契約 (Interface Contracts)
@@ -1885,12 +1885,12 @@ integration 任務：
 
 ```bash
 # 1. 建立 worktrees
-git worktree add ../medrax-mcp-server -b feature/mcp-server
-git worktree add ../medrax-canvas-ui -b feature/canvas-ui
-git worktree add ../medrax-models -b feature/models
+git worktree add ../medvision-mcp-mcp-server -b feature/mcp-server
+git worktree add ../medvision-mcp-canvas-ui -b feature/canvas-ui
+git worktree add ../medvision-mcp-models -b feature/models
 
 # 2. 各 Agent 在自己的 worktree 開發
-cd ../medrax-mcp-server
+cd ../medvision-mcp-mcp-server
 # Agent A 開發 MCP Server...
 
 # 3. 定期整合到 integration branch
@@ -1915,7 +1915,7 @@ pytest tests/integration/
 | 項目 | 決定 | 備註 |
 |:-----|:-----|:-----|
 | **整體架構** | MCP Server + Multi-Model Tools + 內建 Agent | A2A-like 設計 |
-| **Agent 設計** | 內建 MedRAX Medical Agent | 使用 MCP Tools，支援外部 Agent 委託 |
+| **Agent 設計** | 內建 MedVision MCP Medical Agent | 使用 MCP Tools，支援外部 Agent 委託 |
 | **Canvas UI** | React + Fabric.js 繪畫工作區 | 透過 MCP Protocol 與 Agent 互動 |
 | **Worktree 協作** | 4 個 Worktree 並行開發 | mcp-server, canvas-ui, models, integration |
 | **介面契約** | `contracts/` 目錄 | Python + TypeScript 雙語言 |
@@ -2015,7 +2015,7 @@ pytest tests/integration/
 ### B.1 Extension 架構
 
 ```
-medrax-vscode/
+medvision-mcp-vscode/
 ├── package.json
 ├── src/
 │   ├── extension.ts           # Extension 入口
@@ -2047,51 +2047,51 @@ medrax-vscode/
 
 ```json
 {
-  "name": "medrax",
-  "displayName": "MedRAX - Medical Image Analysis",
+  "name": "medvision-mcp",
+  "displayName": "MedVision MCP - Medical Image Analysis",
   "description": "AI-powered medical image analysis with interactive annotation",
   "version": "0.1.0",
-  "publisher": "medrax",
+  "publisher": "medvision-mcp",
   "engines": {
     "vscode": "^1.85.0"
   },
   "categories": ["Machine Learning", "Visualization"],
   "activationEvents": [
-    "onCommand:medrax.openViewer",
-    "onWebviewPanel:medrax.imageViewer"
+    "onCommand:medvision-mcp.openViewer",
+    "onWebviewPanel:medvision-mcp.imageViewer"
   ],
   "main": "./out/extension.js",
   "contributes": {
     "commands": [
       {
-        "command": "medrax.openViewer",
+        "command": "medvision-mcp.openViewer",
         "title": "Open Medical Image Viewer",
-        "category": "MedRAX"
+        "category": "MedVision MCP"
       },
       {
-        "command": "medrax.analyzeImage",
+        "command": "medvision-mcp.analyzeImage",
         "title": "Analyze Medical Image",
-        "category": "MedRAX"
+        "category": "MedVision MCP"
       }
     ],
     "menus": {
       "explorer/context": [
         {
           "when": "resourceExtname =~ /\\.(png|jpg|jpeg|dcm|dicom)$/i",
-          "command": "medrax.openViewer",
-          "group": "medrax"
+          "command": "medvision-mcp.openViewer",
+          "group": "medvision-mcp"
         }
       ]
     },
     "configuration": {
-      "title": "MedRAX",
+      "title": "MedVision MCP",
       "properties": {
-        "medrax.serverUrl": {
+        "medvision-mcp.serverUrl": {
           "type": "string",
           "default": "http://localhost:8000",
-          "description": "MedRAX MCP Server URL"
+          "description": "MedVision MCP MCP Server URL"
         },
-        "medrax.autoAnalyze": {
+        "medvision-mcp.autoAnalyze": {
           "type": "boolean",
           "default": true,
           "description": "Automatically analyze images on open"
@@ -2283,7 +2283,7 @@ security:
 
 > ⚠️ **重要提醒**
 > 
-> MedRAX 為研究/教育用途設計，**不是** FDA/CE 認證的醫療器材。
+> MedVision MCP 為研究/教育用途設計，**不是** FDA/CE 認證的醫療器材。
 > 
 > - 不應用於臨床診斷決策
 > - 所有分析結果僅供參考
@@ -2673,17 +2673,17 @@ Phase 3 (病理):
 
 ---
 
-## 附錄 I: MedRAX Agent 規格
+## 附錄 I: MedVision MCP Agent 規格
 
 ### I.1 Agent 概述
 
-MedRAX Agent 是一個內建的醫療影像分析 Agent，設計為：
+MedVision MCP Agent 是一個內建的醫療影像分析 Agent，設計為：
 - **對內**：使用 MCP Tools 執行分析任務
 - **對外**：作為 MCP Tool 供外部 Agent 委託（A2A）
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                         MedRAX Agent 架構                                    │
+│                         MedVision MCP Agent 架構                                    │
 ├─────────────────────────────────────────────────────────────────────────────┤
 │                                                                             │
 │   ┌─────────────────────────────────────────────────────────────────────┐   │
@@ -2719,7 +2719,7 @@ MedRAX Agent 是一個內建的醫療影像分析 Agent，設計為：
 
 ### I.3 A2A (Agent-to-Agent) 介面
 
-外部 Agent（如 Claude、GPT）可以透過 `invoke_medical_agent` 工具委託 MedRAX Agent：
+外部 Agent（如 Claude、GPT）可以透過 `invoke_medical_agent` 工具委託 MedVision MCP Agent：
 
 ```python
 # 外部 Agent 的調用範例
