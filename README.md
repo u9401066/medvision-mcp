@@ -4,24 +4,63 @@ Medical Vision AI Tools via Model Context Protocol (MCP)
 
 ## Overview
 
-MedVision MCP provides AI-powered medical image analysis tools accessible through the [Model Context Protocol](https://modelcontextprotocol.io/). It enables LLM agents (like Claude, GitHub Copilot) to analyze X-rays, CT scans, and other medical images.
+MedVision MCP provides AI-powered medical image analysis tools accessible through the [Model Context Protocol](https://modelcontextprotocol.io/). It enables LLM agents (like Claude, GitHub Copilot) to analyze chest X-rays using Visual RAG (RAD-DINO + FAISS + DenseNet).
 
-## Features (Roadmap)
+## Features
 
-- 🔬 **X-ray Analysis**: Classification, detection, and findings extraction
-- 🎯 **Interactive Segmentation**: SAM-based region segmentation
-- 💬 **Medical VQA**: Visual question answering for medical images
-- 🖼️ **Canvas Workspace**: Interactive drawing/annotation interface
-- 🤖 **Internal Agent**: Orchestrates multi-step analysis workflows
+- ✅ **DenseNet Classification**: 18 pathology detection (Lung Opacity, Pneumonia, etc.)
+- ✅ **RAD-DINO Embeddings**: 768-dim visual embeddings for similarity search
+- ✅ **FAISS Index**: Fast similarity search for similar historical cases
+- ✅ **DICOM Support**: Native DICOM file reading
+- 🔜 **Interactive Segmentation**: SAM-based region segmentation
+- 🔜 **Gradio Canvas**: Interactive drawing/annotation interface
 
 ## Quick Start
 
 ```bash
-# Install
-pip install medvision-mcp
+# Clone
+git clone https://github.com/u9401066/medvision-mcp.git
+cd medvision-mcp
 
-# Run MCP server
-medvision-mcp
+# Install with uv
+uv sync
+
+# Test classification
+uv run python -c "
+import asyncio
+from src.medvision_mcp.server import classify_xray
+
+async def main():
+    result = await classify_xray('path/to/xray.dcm')
+    print(result)
+asyncio.run(main())
+"
+```
+
+## MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `analyze_xray` | Full Visual RAG analysis (classification + similarity) |
+| `classify_xray` | Quick DenseNet-121 classification (18 pathologies) |
+| `search_similar_cases` | RAG similarity search |
+| `build_rag_index` | Build FAISS index from image directory |
+| `load_rag_index` | Load pre-built index |
+| `get_engine_status` | Check model loading status |
+
+## Claude Desktop Configuration
+
+Add to `~/.config/claude/claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "medvision": {
+      "command": "uv",
+      "args": ["run", "--directory", "/path/to/medvision-mcp", "python", "-m", "src.medvision_mcp.server"]
+    }
+  }
+}
 ```
 
 ## Architecture
@@ -30,22 +69,17 @@ medvision-mcp
 ┌─────────────────────────────────────────────────────────┐
 │                    MCP Client (Claude, Copilot)         │
 └─────────────────────────┬───────────────────────────────┘
-                          │ stdio/SSE
+                          │ stdio
 ┌─────────────────────────▼───────────────────────────────┐
 │                   MedVision MCP Server                  │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────┐  │
-│  │ Session     │  │ Analysis    │  │ Canvas          │  │
-│  │ Tools       │  │ Tools       │  │ Tools           │  │
+│  │ classify    │  │ search      │  │ analyze         │  │
+│  │ _xray       │  │ _similar    │  │ _xray           │  │
 │  └─────────────┘  └─────────────┘  └─────────────────┘  │
 │                          │                              │
 │  ┌───────────────────────▼────────────────────────────┐ │
-│  │              Internal Medical Agent                │ │
-│  │         (Multi-step reasoning & planning)          │ │
-│  └───────────────────────┬────────────────────────────┘ │
-│                          │                              │
-│  ┌───────────────────────▼────────────────────────────┐ │
-│  │                 Model Registry                     │ │
-│  │   CheXagent │ MAIRA-2 │ LLaVA-Med │ SAM3 │ ...    │ │
+│  │               Visual RAG Engine                    │ │
+│  │         RAD-DINO │ FAISS │ DenseNet-121            │ │
 │  └────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -53,15 +87,14 @@ medvision-mcp
 ## Development
 
 ```bash
-# Clone
-git clone https://github.com/u9401066/medvision-mcp.git
-cd medvision-mcp
-
 # Install dev dependencies  
-pip install -e ".[dev]"
+uv sync --dev
 
 # Run tests
-pytest
+uv run pytest
+
+# Check types
+uv run pyright
 ```
 
 ## License
