@@ -3410,3 +3410,569 @@ result = await mcp_client.call_tool("invoke_medical_agent", {
 # 4. 繼續對話
 # 5. 完成後返回控制權給 Claude
 ```
+
+---
+
+### I.10 Visual RAG × Canvas 整合
+
+> **核心機制**：用戶在 Canvas 圈選區域 → 觸發 Visual RAG → 返回相似案例 → 外部 Agent 綜合判斷 → 推送標記回 Canvas
+
+#### I.10.1 完整資料流
+
+```
+┌───────────────────────────────────────────────────────────────────────────────────┐
+│                      Visual RAG × Canvas 完整資料流                                 │
+├───────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                   │
+│   ① User 圈選區域 + 問問題                                                         │
+│   ┌────────────────────────┐                                                      │
+│   │   Canvas UI            │   用戶用 freehand/bbox 圈一塊區域                       │
+│   │   ┌────┬──────┐        │   輸入: "這裡是什麼？"                                  │
+│   │   │    │▓▓▓▓  │        │                                                      │
+│   │   │    │▓▓▓▓  │        │                                                      │
+│   │   └────┴──────┘        │                                                      │
+│   └────────────┬───────────┘                                                      │
+│                │ user_region_select                                               │
+│                ▼                                                                  │
+│   ┌────────────────────────────────────────────────────────────────────────────┐  │
+│   │ ② MCP Tool Call: analyze_selected_region                                   │  │
+│   │ {                                                                          │  │
+│   │   session_id: "abc123",                                                    │  │
+│   │   region: {type: "freehand", points: [[100,150], [120,180], ...]},         │  │
+│   │   question: "這裡是什麼？",                                                 │  │
+│   │   actions: ["describe", "rag_search", "classify"]  ← 觸發三種分析           │  │
+│   │ }                                                                          │  │
+│   └────────────────────────────────────┬───────────────────────────────────────┘  │
+│                                        │                                          │
+│   ┌────────────────────────────────────▼───────────────────────────────────────┐  │
+│   │ ③ MCP Server 內部處理流程                                                   │  │
+│   │                                                                            │  │
+│   │   ┌─────────────────┐                                                      │  │
+│   │   │ Region Cropper  │ 依據 region 座標從原影像擷取子區域                      │  │
+│   │   │                 │ 輸出: cropped_image (224x224 標準化)                   │  │
+│   │   └────────┬────────┘                                                      │  │
+│   │            │                                                               │  │
+│   │   ┌────────▼────────┐  ┌──────────────────┐  ┌────────────────────────────┐│  │
+│   │   │  RAD-DINO       │  │  FAISS Index     │  │  Reference Database        ││  │
+│   │   │  ────────       │  │  ───────────     │  │  ──────────────────        ││  │
+│   │   │  Encode Image   │─►│  Search Top-K    │─►│  case_id → Report         ││  │
+│   │   │  → [768-dim]    │  │  (L2 distance)   │  │  case_id → Diagnosis      ││  │
+│   │   │  ~2秒/張 (GPU)  │  │  <1ms            │  │  case_id → Annotations    ││  │
+│   │   └─────────────────┘  └──────────────────┘  └────────────────────────────┘│  │
+│   │            │                                                               │  │
+│   │   ┌────────▼────────┐                                                      │  │
+│   │   │  DenseNet-121   │ 快速分類 18 種 CXR 病理                                │  │
+│   │   │  ─────────────  │ 輸出: {infiltration: 0.85, nodule: 0.32, ...}        │  │
+│   │   │  ~0.1秒 (GPU)   │                                                      │  │
+│   │   └────────┬────────┘                                                      │  │
+│   │            │                                                               │  │
+│   │   ┌────────▼─────────────────────────────────────────────────────────────┐ │  │
+│   │   │ RAG Context Builder                                                  │ │  │
+│   │   │ 合併: classification + similar_cases + region_metadata               │ │  │
+│   │   └──────────────────────────────────────────────────────────────────────┘ │  │
+│   │                                                                            │  │
+│   └────────────────────────────────────┬───────────────────────────────────────┘  │
+│                                        │                                          │
+│                                        ▼                                          │
+│   ┌────────────────────────────────────────────────────────────────────────────┐  │
+│   │ ④ MCP Response (返回給外部 Agent)                                          │  │
+│   │ {                                                                          │  │
+│   │   region_info: {                                                           │  │
+│   │     bounding_box: [100, 150, 220, 280],                                    │  │
+│   │     pixel_stats: {mean: 128.5, std: 42.3},                                 │  │
+│   │     anatomical_region: "right_lower_lung"                                  │  │
+│   │   },                                                                       │  │
+│   │   classification: {                                                        │  │
+│   │     infiltration: 0.85,                                                    │  │
+│   │     nodule: 0.32,                                                          │  │
+│   │     consolidation: 0.28,                                                   │  │
+│   │     ...                                                                    │  │
+│   │   },                                                                       │  │
+│   │   similar_cases: [                                                         │  │
+│   │     {                                                                      │  │
+│   │       case_id: "mimic-p10032546",                                          │  │
+│   │       similarity: 0.95,                                                    │  │
+│   │       report: "Findings: Right lower lobe infiltrate...",                  │  │
+│   │       diagnosis: "Community-acquired pneumonia"                            │  │
+│   │     },                                                                     │  │
+│   │     {                                                                      │  │
+│   │       case_id: "eurorad-case-4521",                                        │  │
+│   │       similarity: 0.89,                                                    │  │
+│   │       report: "Bilateral ground glass opacities...",                       │  │
+│   │       diagnosis: "Viral pneumonia"                                         │  │
+│   │     }                                                                      │  │
+│   │   ],                                                                       │  │
+│   │   confidence_summary: "高機率肺部浸潤 (DenseNet: 85%, RAG Top-1: 95%)"       │  │
+│   │ }                                                                          │  │
+│   └────────────────────────────────────┬───────────────────────────────────────┘  │
+│                                        │                                          │
+│                                        ▼                                          │
+│   ┌────────────────────────────────────────────────────────────────────────────┐  │
+│   │ ⑤ External Agent (Claude/GPT) 綜合判斷                                      │  │
+│   │                                                                            │  │
+│   │   輸入: MCP Response + 用戶問題 "這裡是什麼？"                               │  │
+│   │                                                                            │  │
+│   │   Agent 推理:                                                              │  │
+│   │   - DenseNet 分類 infiltration = 0.85 (高)                                 │  │
+│   │   - RAG 相似案例 #1: pneumonia (similarity 0.95)                           │  │
+│   │   - RAG 相似案例 #2: viral pneumonia (similarity 0.89)                     │  │
+│   │   - 區域位置: right_lower_lung                                             │  │
+│   │                                                                            │  │
+│   │   生成回答: "這個區域位於右下肺野，呈現明顯的浸潤陰影。                        │  │
+│   │   根據影像特徵和相似案例分析，高度懷疑為肺炎。                                │  │
+│   │   建議結合臨床症狀進一步確認..."                                              │  │
+│   │                                                                            │  │
+│   │   決定標記: 需要在 Canvas 上標示發現區域                                      │  │
+│   │                                                                            │  │
+│   └────────────────────────────────────┬───────────────────────────────────────┘  │
+│                                        │                                          │
+│                                        ▼                                          │
+│   ┌────────────────────────────────────────────────────────────────────────────┐  │
+│   │ ⑥ push_to_canvas (Agent 推送標記)                                          │  │
+│   │ {                                                                          │  │
+│   │   session_id: "abc123",                                                    │  │
+│   │   action: "add_annotations",                                               │  │
+│   │   payload: {                                                               │  │
+│   │     annotations: [                                                         │  │
+│   │       {                                                                    │  │
+│   │         id: "agent-finding-001",                                           │  │
+│   │         type: "bbox",                                                      │  │
+│   │         source: "agent",                                                   │  │
+│   │         coordinates: [100, 150, 220, 280],                                 │  │
+│   │         label: "肺部浸潤",                                                  │  │
+│   │         description: "右下肺野浸潤性陰影，疑似肺炎",                          │  │
+│   │         confidence: 0.85,                                                  │  │
+│   │         style: {color: "#FF6B6B", opacity: 0.8, strokeWidth: 2}            │  │
+│   │       }                                                                    │  │
+│   │     ],                                                                     │  │
+│   │     message: "這個區域位於右下肺野，呈現明顯的浸潤陰影...",                    │  │
+│   │     related_suggestions: [                                                 │  │
+│   │       {                                                                    │  │
+│   │         region: {type: "bbox", coordinates: [50, 100, 150, 200]},          │  │
+│   │         note: "相似案例中此區域也常有病變，建議一併檢查",                      │  │
+│   │         style: {color: "#FFE66D", lineDash: [5, 5]}                        │  │
+│   │       }                                                                    │  │
+│   │     ]                                                                      │  │
+│   │   }                                                                        │  │
+│   │ }                                                                          │  │
+│   └────────────────────────────────────┬───────────────────────────────────────┘  │
+│                                        │                                          │
+│                                        ▼                                          │
+│   ┌────────────────────────────────────────────────────────────────────────────┐  │
+│   │ ⑦ Canvas UI 更新                                                           │  │
+│   │                                                                            │  │
+│   │   ┌────────────────────────────────┐   ┌────────────────────┐             │  │
+│   │   │ Canvas 顯示                    │   │ 對話框              │             │  │
+│   │   │ ┌────┬──────┐                  │   │                    │             │  │
+│   │   │ │    │▓▓▓▓  │← Agent 標記      │   │ Agent: 這個區域    │             │  │
+│   │   │ │    │▓▓▓▓  │  (紅色實線)      │   │ 位於右下肺野...    │             │  │
+│   │   │ │ ┌──┐      │← 建議區域        │   │                    │             │  │
+│   │   │ │ │  │      │  (黃色虛線)      │   │ User: OK, 那這邊？ │             │  │
+│   │   │ │ └──┘      │                  │   │                    │             │  │
+│   │   │ └────┴──────┘                  │   └────────────────────┘             │  │
+│   │   └────────────────────────────────┘                                       │  │
+│   │                                                                            │  │
+│   │   循環繼續: User 可以繼續圈選 → 觸發新的 RAG 查詢...                         │  │
+│   │                                                                            │  │
+│   └────────────────────────────────────────────────────────────────────────────┘  │
+│                                                                                   │
+└───────────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### I.10.2 各模組責任劃分
+
+| 模組 | 責任 | 輸入 | 輸出 |
+|:-----|:-----|:-----|:-----|
+| **Canvas UI** | 用戶互動介面 | 用戶繪圖/問題 | region + question |
+| **MCP Server** | 封裝 AI 模型 | region + question | RAG context |
+| **RAD-DINO** | 影像編碼 | cropped_image | 768-dim embedding |
+| **FAISS** | 向量檢索 | query_embedding | top-k similar |
+| **DenseNet** | 快速分類 | image | 18 病理機率 |
+| **Reference DB** | 儲存案例 | case_id | report + diagnosis |
+| **External Agent** | 綜合判斷+生成 | RAG context | 回答 + 標記指令 |
+
+#### I.10.3 MCP Server 內部實作架構
+
+\`\`\`python
+# src/medvision_mcp/tools/visual_rag.py
+
+from dataclasses import dataclass
+from typing import List, Optional
+import torch
+import faiss
+import numpy as np
+
+@dataclass
+class RAGResult:
+    case_id: str
+    similarity: float
+    report: str
+    diagnosis: Optional[str]
+    annotations: Optional[List[dict]]
+
+class VisualRAGEngine:
+    """Visual RAG 核心引擎"""
+    
+    def __init__(
+        self,
+        encoder_model: str = "microsoft/rad-dino",
+        index_path: str = "data/faiss_index.bin",
+        db_path: str = "data/reference_cases.db"
+    ):
+        # 載入 RAD-DINO 編碼器
+        self.encoder = AutoModel.from_pretrained(encoder_model)
+        self.processor = AutoImageProcessor.from_pretrained(encoder_model)
+        
+        # 載入 FAISS 索引
+        self.index = faiss.read_index(index_path)
+        
+        # 連接參考資料庫
+        self.db = ReferenceDatabase(db_path)
+    
+    def encode_region(self, image: np.ndarray, region: dict) -> np.ndarray:
+        """擷取並編碼區域"""
+        # 1. Crop region from image
+        cropped = self._crop_region(image, region)
+        
+        # 2. Preprocess
+        inputs = self.processor(images=cropped, return_tensors="pt")
+        
+        # 3. Encode
+        with torch.no_grad():
+            outputs = self.encoder(**inputs)
+            embedding = outputs.last_hidden_state[:, 0]  # CLS token
+        
+        return embedding.numpy()
+    
+    def search_similar(
+        self,
+        embedding: np.ndarray,
+        top_k: int = 5
+    ) -> List[RAGResult]:
+        """搜尋相似案例"""
+        # FAISS 搜尋
+        distances, indices = self.index.search(embedding, top_k)
+        
+        # 從資料庫取得詳細資訊
+        results = []
+        for i, idx in enumerate(indices[0]):
+            case = self.db.get_case(idx)
+            results.append(RAGResult(
+                case_id=case.id,
+                similarity=1.0 / (1.0 + distances[0][i]),
+                report=case.report,
+                diagnosis=case.diagnosis,
+                annotations=case.annotations
+            ))
+        
+        return results
+
+
+# MCP Tool 實作
+@mcp_tool()
+async def analyze_selected_region(
+    session_id: str,
+    region: dict,
+    question: str,
+    actions: List[str] = ["describe", "rag_search", "classify"]
+) -> dict:
+    """
+    分析用戶在 Canvas 上選取的區域。
+    
+    Args:
+        session_id: 會話 ID
+        region: 區域定義 (type, coordinates/points)
+        question: 用戶問題
+        actions: 要執行的動作列表
+            - "describe": 描述區域基本資訊
+            - "rag_search": 執行 Visual RAG 搜尋
+            - "classify": 執行 DenseNet 分類
+    
+    Returns:
+        包含 region_info, classification, similar_cases 的字典
+    """
+    session = await get_session(session_id)
+    image = session.current_image
+    
+    result = {}
+    
+    # 1. 區域基本資訊
+    if "describe" in actions:
+        result["region_info"] = describe_region(image, region)
+    
+    # 2. Visual RAG 搜尋
+    if "rag_search" in actions:
+        embedding = rag_engine.encode_region(image, region)
+        similar = rag_engine.search_similar(embedding, top_k=5)
+        result["similar_cases"] = [
+            {
+                "case_id": s.case_id,
+                "similarity": s.similarity,
+                "report": s.report,
+                "diagnosis": s.diagnosis
+            }
+            for s in similar
+        ]
+    
+    # 3. DenseNet 分類
+    if "classify" in actions:
+        cropped = crop_region(image, region)
+        result["classification"] = densenet_classify(cropped)
+    
+    # 4. 組合信心度摘要
+    result["confidence_summary"] = build_confidence_summary(result)
+    
+    return result
+\`\`\`
+
+#### I.10.4 Canvas UI 整合 (React Hook)
+
+\`\`\`typescript
+// @medvision-mcp/canvas/src/hooks/useVisualRAG.ts
+
+import { useMCP } from './useMCP';
+import { useCanvas } from './useCanvas';
+import { Annotation, Region } from '../types';
+
+interface RAGSearchResult {
+  region_info: {
+    bounding_box: [number, number, number, number];
+    pixel_stats: { mean: number; std: number };
+    anatomical_region: string;
+  };
+  classification: Record<string, number>;
+  similar_cases: Array<{
+    case_id: string;
+    similarity: number;
+    report: string;
+    diagnosis?: string;
+  }>;
+  confidence_summary: string;
+}
+
+export function useVisualRAG() {
+  const { callTool } = useMCP();
+  const { sessionId, addAnnotations, showMessage } = useCanvas();
+
+  /**
+   * 用戶圈選區域後觸發 Visual RAG 分析
+   */
+  const analyzeRegion = async (
+    region: Region,
+    question: string
+  ): Promise<void> => {
+    // 1. 呼叫 MCP Tool
+    const result = await callTool<RAGSearchResult>('analyze_selected_region', {
+      session_id: sessionId,
+      region,
+      question,
+      actions: ['describe', 'rag_search', 'classify'],
+    });
+
+    // 2. 顯示處理中狀態
+    showMessage({
+      type: 'processing',
+      text: '正在分析選取區域...',
+    });
+
+    // 3. 結果會由 External Agent 透過 push_to_canvas 推送
+  };
+
+  /**
+   * 接收 Agent 推送的標記
+   */
+  const handleAgentPush = (payload: {
+    annotations: Annotation[];
+    message: string;
+    related_suggestions?: Array<{
+      region: Region;
+      note: string;
+    }>;
+  }) => {
+    // 1. 添加 Agent 標記
+    addAnnotations(payload.annotations);
+
+    // 2. 顯示 Agent 訊息
+    showMessage({
+      type: 'agent',
+      text: payload.message,
+    });
+
+    // 3. 顯示建議區域 (虛線)
+    if (payload.related_suggestions) {
+      const suggestions = payload.related_suggestions.map((s, idx) => ({
+        id: \`suggestion-\${idx}\`,
+        type: 'bbox' as const,
+        source: 'agent' as const,
+        coordinates: s.region.coordinates,
+        label: s.note,
+        style: {
+          color: '#FFE66D',
+          lineDash: [5, 5],
+          opacity: 0.6,
+        },
+      }));
+      addAnnotations(suggestions);
+    }
+  };
+
+  return {
+    analyzeRegion,
+    handleAgentPush,
+  };
+}
+\`\`\`
+
+#### I.10.5 時序圖
+
+\`\`\`
+┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐     ┌──────────┐
+│  User    │     │  Canvas  │     │   MCP    │     │ External │     │  Canvas  │
+│          │     │    UI    │     │  Server  │     │  Agent   │     │   UI     │
+└────┬─────┘     └────┬─────┘     └────┬─────┘     └────┬─────┘     └────┬─────┘
+     │                │                │                │                │
+     │ Draw region    │                │                │                │
+     │ + "這裡呢？"   │                │                │                │
+     │───────────────►│                │                │                │
+     │                │                │                │                │
+     │                │ analyze_selected_region         │                │
+     │                │───────────────►│                │                │
+     │                │                │                │                │
+     │                │                │───┐ Crop       │                │
+     │                │                │   │ Encode     │                │
+     │                │                │   │ Search     │                │
+     │                │                │   │ Classify   │                │
+     │                │                │◄──┘            │                │
+     │                │                │                │                │
+     │                │   RAG Context  │                │                │
+     │                │◄───────────────│                │                │
+     │                │                │                │                │
+     │                │                │  Forward to External Agent      │
+     │                │                │───────────────►│                │
+     │                │                │                │                │
+     │                │                │                │───┐ LLM        │
+     │                │                │                │   │ Reasoning  │
+     │                │                │                │◄──┘            │
+     │                │                │                │                │
+     │                │                │ push_to_canvas │                │
+     │                │                │◄───────────────│                │
+     │                │                │                │                │
+     │                │ Add annotations + message       │                │
+     │                │◄───────────────│                │                │
+     │                │                │                │                │
+     │ See result     │                │                │                │
+     │◄───────────────│                │                │                │
+     │                │                │                │                │
+\`\`\`
+
+#### I.10.6 配置選項
+
+\`\`\`yaml
+# config/visual_rag.yaml
+
+visual_rag:
+  # 編碼器設定
+  encoder:
+    model: "microsoft/rad-dino"
+    device: "cuda"  # or "cpu"
+    batch_size: 4
+  
+  # FAISS 索引設定
+  index:
+    path: "data/faiss_index.bin"
+    dimension: 768
+    metric: "L2"  # or "IP" (inner product)
+  
+  # 檢索設定
+  retrieval:
+    top_k: 5
+    min_similarity: 0.5  # 過濾低相似度結果
+    rerank: false  # 是否使用 reranker
+  
+  # 分類器設定
+  classifier:
+    model: "densenet121-res224-chex"
+    threshold: 0.5  # 病理陽性閾值
+  
+  # 參考資料庫
+  reference_db:
+    type: "sqlite"
+    path: "data/reference_cases.db"
+    sources:
+      - name: "MIMIC-CXR"
+        path: "/data/mimic-cxr/"
+        reports: true
+        labels: true
+      - name: "CheXpert"
+        path: "/data/chexpert/"
+        reports: false
+        labels: true
+      - name: "EURORAD"
+        path: "data/eurorad_metadata.json"
+        reports: true
+        labels: true
+
+# Canvas 整合設定
+canvas_integration:
+  region_analysis:
+    actions:
+      - "describe"
+      - "rag_search"
+      - "classify"
+    auto_suggest: true
+    max_suggestions: 3
+  
+  annotation_styles:
+    agent_finding:
+      color: "#FF6B6B"
+      opacity: 0.8
+      strokeWidth: 2
+    agent_suggestion:
+      color: "#FFE66D"
+      opacity: 0.6
+      lineDash: [5, 5]
+    user_selection:
+      color: "#4ECDC4"
+      opacity: 0.7
+\`\`\`
+
+#### I.10.7 Reference Database Schema
+
+\`\`\`sql
+-- data/reference_cases.db
+
+CREATE TABLE cases (
+    id INTEGER PRIMARY KEY,
+    case_id TEXT UNIQUE NOT NULL,
+    source TEXT NOT NULL,  -- 'MIMIC-CXR', 'CheXpert', 'EURORAD'
+    image_path TEXT,
+    embedding BLOB,  -- 768-dim float32 (3072 bytes)
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE reports (
+    id INTEGER PRIMARY KEY,
+    case_id TEXT REFERENCES cases(case_id),
+    section TEXT,  -- 'findings', 'impression', 'full'
+    text TEXT NOT NULL
+);
+
+CREATE TABLE diagnoses (
+    id INTEGER PRIMARY KEY,
+    case_id TEXT REFERENCES cases(case_id),
+    diagnosis TEXT NOT NULL,
+    confidence REAL
+);
+
+CREATE TABLE labels (
+    id INTEGER PRIMARY KEY,
+    case_id TEXT REFERENCES cases(case_id),
+    pathology TEXT NOT NULL,  -- 'infiltration', 'nodule', etc.
+    value INTEGER  -- -1: uncertain, 0: negative, 1: positive
+);
+
+CREATE INDEX idx_cases_source ON cases(source);
+CREATE INDEX idx_labels_pathology ON labels(pathology);
+\`\`\`
+
+---

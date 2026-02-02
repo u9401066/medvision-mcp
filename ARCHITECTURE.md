@@ -72,12 +72,57 @@ FastMCP 實現的 Model Context Protocol 伺服器。
 
 | 類型 | 模型 | 用途 |
 |------|------|------|
-| Classification | CheXagent-2-3b | X-ray 疾病分類 |
-| VQA | LLaVA-Med, MAIRA-2 | 醫療問答 |
+| Classification | DenseNet-121 | X-ray 18 種病理分類 |
+| VQA | LLaVA-Med, CheXagent | 醫療問答 |
 | Segmentation | Medical-SAM3 | 互動式分割 |
-| Report | CheXagent | 報告生成 |
+| Encoding | RAD-DINO | 768-dim 影像特徵提取 |
+| Report | ViT-BERT | 報告生成 |
 
-### 4. Canvas UI (`canvas-ui/`)
+### 4. Visual RAG Engine (`src/medvision_mcp/tools/visual_rag.py`)
+
+**核心流程：用戶圈選區域 → RAD-DINO 編碼 → FAISS 檢索 → 返回相似案例**
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                      Visual RAG 混合模式 (Mode B)                       │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  User Region Selection                                                  │
+│         │                                                               │
+│         ▼                                                               │
+│  ┌──────────────┐                                                       │
+│  │ Region Crop  │ 擷取選區 (224x224)                                    │
+│  └──────┬───────┘                                                       │
+│         │                                                               │
+│  ┌──────▼───────┐  ┌───────────────┐  ┌─────────────────────────────┐  │
+│  │  RAD-DINO    │  │  FAISS Index  │  │  Reference Database         │  │
+│  │  ────────    │  │  ───────────  │  │  ──────────────────         │  │
+│  │  768-dim     │─►│  Top-K Search │─►│  case_id → Report          │  │
+│  │  ~2s/img GPU │  │  <1ms         │  │  case_id → Diagnosis       │  │
+│  └──────────────┘  └───────────────┘  └─────────────────────────────┘  │
+│         │                                                               │
+│  ┌──────▼───────┐                                                       │
+│  │ DenseNet-121 │ 快速分類 18 種 CXR 病理                               │
+│  │ ─────────────│ {infiltration: 0.85, nodule: 0.32, ...}              │
+│  └──────┬───────┘                                                       │
+│         │                                                               │
+│         ▼                                                               │
+│  ┌──────────────────────────────────────────────────────────────────┐  │
+│  │ RAG Context (返回給外部 Agent)                                    │  │
+│  │ - classification: {...}                                          │  │
+│  │ - similar_cases: [{report, diagnosis, similarity}, ...]          │  │
+│  │ - confidence_summary: "高機率肺部浸潤..."                         │  │
+│  └──────────────────────────────────────────────────────────────────┘  │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+**元件：**
+- **RAD-DINO**: microsoft/rad-dino (346MB, 768-dim)
+- **FAISS**: faiss-cpu, L2 距離搜尋
+- **DenseNet-121**: torchxrayvision 預訓練權重
+
+### 5. Canvas UI (`canvas-ui/`)
 
 React + Fabric.js 的互動式醫療影像工作區。
 
@@ -86,12 +131,17 @@ React + Fabric.js 的互動式醫療影像工作區。
 - 繪圖工具 (自由繪、矩形、多邊形)
 - AI 結果疊加 (分割遮罩、熱力圖、標註)
 - 與 MCP Server 雙向通訊
+- Visual RAG 互動 (圈選區域 → 觸發分析)
 
 ## 資料流
 
 1. **使用者上傳影像** → Canvas UI → MCP Server → Session 建立
 2. **AI 分析請求** → MCP Client → MCP Server → Model Registry → 結果
-3. **互動標註** → Canvas UI → MCP Server → Agent 處理 → 更新 Canvas
+3. **互動標註 (Visual RAG)**：
+   - Canvas UI → 用戶圈選區域 + 問題
+   - MCP Server → RAD-DINO 編碼 → FAISS 搜尋 → 返回相似案例
+   - External Agent (Claude) → 綜合判斷 → push_to_canvas
+   - Canvas UI → 顯示標記 + 建議區域
 4. **Agent 規劃** → MCP Client → invoke_medical_agent → 多步驟執行 → 彙整結果
 
 ## DDD 分層
