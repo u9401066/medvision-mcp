@@ -12,8 +12,9 @@ MedVision MCP provides AI-powered medical image analysis tools accessible throug
 - ✅ **RAD-DINO Embeddings**: 768-dim visual embeddings for similarity search
 - ✅ **FAISS Index**: Fast similarity search for similar historical cases
 - ✅ **DICOM Support**: Native DICOM file reading
-- 🔜 **Interactive Segmentation**: SAM-based region segmentation
-- 🔜 **Gradio Canvas**: Interactive drawing/annotation interface
+- ✅ **Gradio Canvas**: Interactive ROI drawing/annotation interface
+- ✅ **ROI Analysis**: Analyze specific regions drawn on X-rays
+- 🔜 **Medical SAM**: SAM-based region segmentation
 
 ## Quick Start
 
@@ -47,6 +48,26 @@ asyncio.run(main())
 | `build_rag_index` | Build FAISS index from image directory |
 | `load_rag_index` | Load pre-built index |
 | `get_engine_status` | Check model loading status |
+
+## Gradio UI
+
+Launch the interactive web UI:
+
+```bash
+# Start Gradio server
+uv run python -m src.medvision_mcp.ui.app
+# Open http://localhost:7860
+```
+
+**UI Tabs:**
+| Tab | Description |
+|-----|-------------|
+| 📊 Analysis | Full image analysis (classification + RAG) |
+| ⚡ Quick Classify | Fast 18-pathology classification |
+| 🎨 Canvas ROI | **Draw ROIs** and analyze specific regions |
+| 🔧 Build Index | Create FAISS index from images |
+| 📂 Load Index | Load pre-built index |
+| ℹ️ Status | Check model loading status |
 
 ## Claude Desktop Configuration
 
