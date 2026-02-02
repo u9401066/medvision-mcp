@@ -1,6 +1,6 @@
 """MedVision Gradio Canvas UI.
 
-Phase 1B: Interactive X-ray analysis with Visual RAG.
+Phase 2: Interactive X-ray analysis with Visual RAG + ROI selection.
 """
 
 import json
@@ -212,6 +212,217 @@ def get_status() -> str:
 
 
 # ============================================================================
+# Canvas/ROI Functions (Phase 2)
+# ============================================================================
+
+
+def extract_roi_from_editor(editor_data: dict | None) -> tuple[np.ndarray | None, list[dict]]:
+    """Extract ROI regions from ImageEditor data.
+    
+    Args:
+        editor_data: ImageEditor output with background and layers
+        
+    Returns:
+        (background_image, list of ROI dicts with bbox)
+    """
+    if editor_data is None:
+        return None, []
+    
+    # ImageEditor returns: {"background": ndarray, "layers": [ndarray, ...], "composite": ndarray}
+    background = editor_data.get("background")
+    layers = editor_data.get("layers", [])
+    
+    if background is None:
+        return None, []
+    
+    rois = []
+    for i, layer in enumerate(layers):
+        if layer is None:
+            continue
+        
+        # Find non-transparent pixels (drawn regions)
+        if layer.shape[-1] == 4:  # RGBA
+            alpha = layer[:, :, 3]
+        else:
+            alpha = np.any(layer != 0, axis=-1).astype(np.uint8) * 255
+        
+        # Find bounding box of drawn region
+        rows = np.any(alpha > 0, axis=1)
+        cols = np.any(alpha > 0, axis=0)
+        
+        if not np.any(rows) or not np.any(cols):
+            continue
+        
+        y_min, y_max = np.where(rows)[0][[0, -1]]
+        x_min, x_max = np.where(cols)[0][[0, -1]]
+        
+        # Add padding
+        pad = 5
+        y_min = max(0, y_min - pad)
+        x_min = max(0, x_min - pad)
+        y_max = min(background.shape[0] - 1, y_max + pad)
+        x_max = min(background.shape[1] - 1, x_max + pad)
+        
+        rois.append({
+            "layer_id": i,
+            "bbox": [int(x_min), int(y_min), int(x_max), int(y_max)],
+            "width": int(x_max - x_min),
+            "height": int(y_max - y_min),
+        })
+    
+    return background, rois
+
+
+def analyze_canvas_roi(
+    editor_data: dict | None,
+    analysis_mode: str,
+    threshold: float,
+) -> tuple[str, str, Image.Image | None]:
+    """Analyze ROI regions drawn on canvas.
+    
+    Args:
+        editor_data: ImageEditor output
+        analysis_mode: 'full_image', 'roi_only', 'compare'
+        threshold: Classification threshold
+        
+    Returns:
+        (analysis_text, roi_info, annotated_image)
+    """
+    if editor_data is None:
+        return "請先上傳影像", "", None
+    
+    background, rois = extract_roi_from_editor(editor_data)
+    
+    if background is None:
+        return "請先上傳影像", "", None
+    
+    engine = get_engine()
+    
+    # Convert background to PIL
+    if isinstance(background, np.ndarray):
+        if background.shape[-1] == 4:  # RGBA -> RGB
+            background_pil = Image.fromarray(background[:, :, :3])
+        else:
+            background_pil = Image.fromarray(background)
+    else:
+        background_pil = background
+    
+    results_text = ""
+    roi_info_text = ""
+    
+    # Analyze full image
+    if analysis_mode in ("full_image", "compare"):
+        full_result = engine.classify_image(background_pil, threshold=threshold)
+        results_text += "## 🖼️ Full Image Analysis\n\n"
+        results_text += f"**Top Finding:** {full_result.get('top_finding', 'N/A')} ({full_result.get('top_probability', 0):.1%})\n\n"
+        
+        if full_result.get("positive_findings"):
+            results_text += "| Pathology | Probability |\n|-----------|-------------|\n"
+            for f in full_result["positive_findings"][:5]:
+                results_text += f"| {f['label']} | {f['probability']:.1%} |\n"
+        results_text += "\n"
+    
+    # Analyze each ROI
+    if rois and analysis_mode in ("roi_only", "compare"):
+        roi_info_text = f"### 🎯 Detected {len(rois)} ROI(s)\n\n"
+        
+        for i, roi in enumerate(rois, 1):
+            x1, y1, x2, y2 = roi["bbox"]
+            roi_info_text += f"**ROI {i}:** ({x1}, {y1}) to ({x2}, {y2}) - {roi['width']}x{roi['height']}px\n\n"
+            
+            # Crop ROI from background
+            roi_image = background_pil.crop((x1, y1, x2, y2))
+            
+            # Skip if too small
+            if roi["width"] < 32 or roi["height"] < 32:
+                roi_info_text += "⚠️ ROI too small for classification\n\n"
+                continue
+            
+            # Classify ROI
+            roi_result = engine.classify_image(roi_image, threshold=threshold)
+            
+            results_text += f"## 🎯 ROI {i} Analysis\n\n"
+            results_text += f"**Top Finding:** {roi_result.get('top_finding', 'N/A')} ({roi_result.get('top_probability', 0):.1%})\n\n"
+            
+            if roi_result.get("positive_findings"):
+                results_text += "| Pathology | Probability |\n|-----------|-------------|\n"
+                for f in roi_result["positive_findings"][:5]:
+                    results_text += f"| {f['label']} | {f['probability']:.1%} |\n"
+            results_text += "\n"
+    
+    elif not rois and analysis_mode in ("roi_only", "compare"):
+        roi_info_text = "⚠️ No ROI drawn. Use the brush tool to mark regions of interest.\n"
+    
+    # Create annotated image with ROI boxes
+    annotated = None
+    if rois and background is not None:
+        from PIL import ImageDraw
+        annotated = background_pil.copy().convert("RGB")
+        draw = ImageDraw.Draw(annotated)
+        
+        colors = ["#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FF00FF"]
+        for i, roi in enumerate(rois):
+            x1, y1, x2, y2 = roi["bbox"]
+            color = colors[i % len(colors)]
+            draw.rectangle([x1, y1, x2, y2], outline=color, width=3)
+            draw.text((x1 + 5, y1 + 5), f"ROI {i+1}", fill=color)
+    
+    if not results_text:
+        results_text = "請選擇分析模式並繪製 ROI"
+    
+    return results_text, roi_info_text, annotated
+
+
+def create_annotated_preview(
+    editor_data: dict | None,
+) -> tuple[str, Image.Image | None]:
+    """Create preview with ROI annotations.
+    
+    Args:
+        editor_data: ImageEditor output
+        
+    Returns:
+        (roi_info_text, annotated_image)
+    """
+    if editor_data is None:
+        return "Upload an image first", None
+    
+    background, rois = extract_roi_from_editor(editor_data)
+    
+    if background is None:
+        return "No image loaded", None
+    
+    # Convert to PIL
+    if isinstance(background, np.ndarray):
+        if background.shape[-1] == 4:
+            background_pil = Image.fromarray(background[:, :, :3])
+        else:
+            background_pil = Image.fromarray(background)
+    else:
+        background_pil = background
+    
+    if not rois:
+        return "No ROI detected. Draw on the image to mark regions.", background_pil
+    
+    # Create annotated image
+    from PIL import ImageDraw
+    annotated = background_pil.copy().convert("RGB")
+    draw = ImageDraw.Draw(annotated)
+    
+    colors = ["#FF0000", "#00FF00", "#0000FF", "#FFFF00", "#FF00FF"]
+    
+    info_lines = [f"### 🎯 Detected {len(rois)} ROI(s)\n"]
+    for i, roi in enumerate(rois):
+        x1, y1, x2, y2 = roi["bbox"]
+        color = colors[i % len(colors)]
+        draw.rectangle([x1, y1, x2, y2], outline=color, width=3)
+        draw.text((x1 + 5, y1 + 5), f"ROI {i+1}", fill=color)
+        info_lines.append(f"- **ROI {i+1}:** ({x1}, {y1}) → ({x2}, {y2}) [{roi['width']}×{roi['height']}]")
+    
+    return "\n".join(info_lines), annotated
+
+
+# ============================================================================
 # Gradio App
 # ============================================================================
 
@@ -392,7 +603,85 @@ def create_app() -> gr.Blocks:
                 )
             
             # ================================================================
-            # Tab 5: Status
+            # Tab 5: Canvas ROI (Phase 2)
+            # ================================================================
+            with gr.TabItem("🎨 Canvas ROI", id="canvas"):
+                gr.Markdown(
+                    """
+                    ### Interactive ROI Analysis
+                    
+                    1. **Upload** an X-ray image
+                    2. **Draw** regions of interest using the brush tool
+                    3. **Analyze** the selected regions
+                    """
+                )
+                
+                with gr.Row():
+                    # Left: Canvas editor
+                    with gr.Column(scale=1):
+                        canvas_editor = gr.ImageEditor(
+                            label="Draw ROI on X-Ray",
+                            type="numpy",
+                            height=500,
+                            sources=["upload", "clipboard"],
+                            brush=gr.Brush(
+                                default_size=15,
+                                colors=["#FF0000", "#00FF00", "#0000FF", "#FFFF00"],
+                                default_color="#FF0000",
+                            ),
+                            eraser=gr.Eraser(default_size=20),
+                            transforms=["crop"],
+                            canvas_size=(800, 800),
+                        )
+                        
+                        with gr.Row():
+                            preview_btn = gr.Button("👁️ Preview ROIs", variant="secondary")
+                            canvas_analyze_btn = gr.Button("🔍 Analyze", variant="primary")
+                    
+                    # Right: Analysis options and results
+                    with gr.Column(scale=1):
+                        with gr.Accordion("Analysis Options", open=True):
+                            canvas_mode = gr.Radio(
+                                choices=["full_image", "roi_only", "compare"],
+                                value="compare",
+                                label="Analysis Mode",
+                                info="full_image: Analyze whole image | roi_only: Only ROIs | compare: Both",
+                            )
+                            canvas_threshold = gr.Slider(
+                                minimum=0.1, maximum=0.9, value=0.3, step=0.05,
+                                label="Threshold",
+                            )
+                        
+                        roi_info_output = gr.Markdown(label="ROI Info")
+                        
+                        with gr.Tabs():
+                            with gr.TabItem("Results"):
+                                canvas_results = gr.Markdown(
+                                    label="Analysis Results",
+                                    elem_classes=["analysis-result"],
+                                )
+                            with gr.TabItem("Annotated Preview"):
+                                annotated_preview = gr.Image(
+                                    label="Annotated Image",
+                                    type="pil",
+                                    height=400,
+                                )
+                
+                # Event handlers
+                preview_btn.click(
+                    fn=create_annotated_preview,
+                    inputs=[canvas_editor],
+                    outputs=[roi_info_output, annotated_preview],
+                )
+                
+                canvas_analyze_btn.click(
+                    fn=analyze_canvas_roi,
+                    inputs=[canvas_editor, canvas_mode, canvas_threshold],
+                    outputs=[canvas_results, roi_info_output, annotated_preview],
+                )
+            
+            # ================================================================
+            # Tab 6: Status
             # ================================================================
             with gr.TabItem("ℹ️ Status", id="status"):
                 status_output = gr.Markdown()
@@ -409,7 +698,7 @@ def create_app() -> gr.Blocks:
         gr.Markdown(
             """
             ---
-            **MedVision MCP** | Phase 1B | [GitHub](https://github.com/u9401066/medvision-mcp)
+            **MedVision MCP** | Phase 2 | [GitHub](https://github.com/u9401066/medvision-mcp)
             """
         )
     
