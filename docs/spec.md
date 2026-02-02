@@ -1,6 +1,6 @@
 # MedVision MCP v2 架構規格書
 
-> 版本: 0.4.0  
+> 版本: 0.5.0  
 > 日期: 2026-02-02  
 > 狀態: Draft
 
@@ -8,6 +8,7 @@
 
 | 版本 | 日期 | 變更 |
 |:-----|:-----|:-----|
+| 0.5.0 | 2026-02-02 | 新增互動診斷流程設計、Canvas 標記類型定義、A2A vs 純 MCP 雙模式、已驗證模型狀態表 |
 | 0.4.0 | 2026-02-02 | 架構重構：MCP Server + Multi-Model Tools + 內建 Medical Agent (A2A)；新增 Canvas 繪畫工作區規格 |
 | 0.3.1 | 2026-01-28 | 新增完整 AI 模型清單：Radiology VLM、Medical Encoders、CT Segmentation、Pathology Foundation Models |
 | 0.3.0 | 2026-01-28 | 確認 Medical-SAM3、vLLM lazy loading 策略、更新模型來源 |
@@ -2671,6 +2672,30 @@ Phase 3 (病理):
 └── UNI2-h             # High-accuracy Tiles
 ```
 
+### H.4 已驗證模型狀態 (2025-06 實測)
+
+> **測試環境**：Tesla V100-SXM2-32GB, Python 3.10, PyTorch 2.x, CUDA
+
+| 模型 | 狀態 | 工具類別 | 說明 |
+|:-----|:-----|:---------|:-----|
+| **DenseNet-121** | ✅ Ready | 分類 | torchxrayvision，18 種 CXR 病理 |
+| **PSPNet** | ✅ Ready | 分割 | torchxrayvision，14 種器官分割 |
+| **DICOM Processor** | ✅ Ready | 影像處理 | pydicom，Window/Level 調整 |
+| **ViT-BERT Report Generator** | ✅ Ready | 報告生成 | IAMJB/radiology_report_generation，已下載權重 |
+| **CheXagent-2-3b VQA** | ⚠️ 環境問題 | VQA | 需安裝 `libGL.so.1` (albumentations 依賴) |
+| **LLaVA-Med-1.5-7B** | ❓ 未測試 | VQA | 需 vLLM 服務或直接載入 |
+| **MAIRA-2** | ❓ 未測試 | Grounding | Microsoft Phrase Grounding |
+| **Roentgen (ChestXRayGeneratorTool)** | ❓ 未測試 | 生成 | 需本地 Roentgen 權重 |
+
+**修復 CheXagent 環境問題**：
+```bash
+# Ubuntu/Debian
+sudo apt-get install libgl1-mesa-glx
+
+# 或使用 headless 版本 (如果 albumentations 支援)
+pip install opencv-python-headless
+```
+
 ---
 
 ## 附錄 I: MedVision MCP Agent 規格
@@ -2819,4 +2844,401 @@ agent:
     auto_explain: true  # 自動解釋分析結果
     suggest_next_steps: true  # 建議後續動作
     interactive_mode: true  # 需要時詢問用戶
+```
+
+### I.6 互動診斷流程設計
+
+#### I.6.1 雙向互動診斷循環
+
+MedVision MCP 的核心互動模式是一個**雙向互動診斷循環 (Diagnosis Loop)**：
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                     互動診斷循環 (Diagnosis Loop)                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   ┌─────────────┐                              ┌─────────────┐          │
+│   │   Canvas    │◄────── push_to_canvas ───────│   Agent     │          │
+│   │   (畫板)    │                              │   (診斷)    │          │
+│   │             │                              │             │          │
+│   │  ┌───────┐  │   user_region_select         │  ┌───────┐  │          │
+│   │  │影像   │  │────────────────────────────►│  │VLM    │  │          │
+│   │  └───────┘  │                              │  │Agent  │  │          │
+│   │  ┌───────┐  │   agent_highlight            │  └───────┘  │          │
+│   │  │標記   │◄─┼──────────────────────────────┤             │          │
+│   │  └───────┘  │                              │  ┌───────┐  │          │
+│   │  ┌───────┐  │                              │  │Tools  │  │          │
+│   │  │用戶畫 │  │   ask_about_region           │  └───────┘  │          │
+│   │  └───────┘  │────────────────────────────►│             │          │
+│   └─────────────┘                              └─────────────┘          │
+│         ▲                                            │                  │
+│         │              ┌─────────────┐               │                  │
+│         └──────────────│  對話框/Chat │◄──────────────┘                  │
+│                        └─────────────┘                                  │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### I.6.2 互動步驟詳解
+
+| 步驟 | 發起者 | 動作 | 技術實現 |
+|:-----|:-------|:-----|:---------|
+| 1 | User | 載入影像到 Canvas | `add_image_to_session` |
+| 2 | User | 在對話框問診斷 | `invoke_medical_agent` / handoff |
+| 3 | Agent | 回答診斷結果 | VLM inference |
+| 4 | User | 要求標記出發現位置 | `request: "highlight findings"` |
+| 5 | Agent | **主動**在 Canvas 標記 | `push_to_canvas` |
+| 6 | User | **在 Canvas 圈選區域** 問 "這裡呢？" | `user_region_select` → MCP call |
+| 7 | Agent | 分析用戶選區 + **主動標出相關區域** | `analyze_selected_region` + `push_to_canvas` |
+
+#### I.6.3 完整流程範例
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                 互動診斷流程 (完整範例)                                   │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  Step 1: 載入影像                                                        │
+│  ┌─────────────┐                                                        │
+│  │  User 拉入   │ ──► add_image_to_session ──► Canvas 顯示影像           │
+│  │  CXR 影像   │                                                        │
+│  └─────────────┘                                                        │
+│                                                                         │
+│  Step 2: 問診斷                                                          │
+│  ┌─────────────┐                                                        │
+│  │  User 輸入   │ ──► invoke_medical_agent({                            │
+│  │  "幫我診斷"  │       task: "診斷這張影像",                             │
+│  └─────────────┘       config: {auto_suggest: true}                     │
+│                      })                                                 │
+│                                                                         │
+│  Step 3: Agent 回答 + 自動標記                                           │
+│  ┌─────────────┐     ┌─────────────────────────────────────────────┐    │
+│  │  Agent:     │     │ push_to_canvas({                            │    │
+│  │  "右下肺有  │ ──► │   annotations: [                            │    │
+│  │   結節"     │     │     {type: "bbox", coords: [...], label: ..}│    │
+│  └─────────────┘     │   ],                                        │    │
+│         │            │   related_regions: [                        │    │
+│         ▼            │     {coords: [...], note: "建議也檢查這裡"} │    │
+│  ┌─────────────┐     │   ]                                         │    │
+│  │ Canvas 顯示 │     │ })                                          │    │
+│  │ 標記+建議   │     └─────────────────────────────────────────────┘    │
+│  └─────────────┘                                                        │
+│                                                                         │
+│  Step 4: User 在 Canvas 畫區域問 "這裡呢？"                              │
+│  ┌─────────────┐                                                        │
+│  │ User Draws  │ ──► analyze_selected_region({                          │
+│  │ Freehand    │       region: {type: "polygon", points: [...]},        │
+│  │ "這裡呢？"  │       question: "這裡呢？",                             │
+│  └─────────────┘       actions: ["describe", "segment", "suggest"]      │
+│                      })                                                 │
+│                                                                         │
+│  Step 5: Agent 回答 + 標出相關區域                                       │
+│  ┌─────────────┐     ┌─────────────────────────────────────────────┐    │
+│  │  Agent:     │     │ Response includes:                          │    │
+│  │  "這區域是  │ ──► │   answer: "這是肺紋理增加區域..."           │    │
+│  │   肺紋理... │     │   annotations: [                            │    │
+│  │   另外這區  │     │     {type:"mask", data:[...], label:"用戶"}│    │
+│  │   域也有..."│     │   ],                                        │    │
+│  └─────────────┘     │   related_suggestions: [                    │    │
+│                      │     {coords:[...], note:"這裡可能也有浸潤"} │    │
+│                      │   ]                                         │    │
+│                      └─────────────────────────────────────────────┘    │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### I.6.4 主動建議配置
+
+Agent 主動標記「這裡可能也有問題」的觸發時機可配置：
+
+```yaml
+# agent_config.yaml
+behavior:
+  auto_suggest:
+    enabled: true  # 可關閉
+    triggers:
+      - on_analysis_complete      # 分析完成自動建議
+      - on_user_region_question   # 用戶問區域時順便建議
+      - on_high_confidence_finding  # 高信心發現時建議
+    min_confidence: 0.7  # 信心度門檻
+    max_suggestions: 3   # 最多建議數量
+```
+
+---
+
+### I.7 UI 架構 (共用組件策略)
+
+Canvas UI 採用**共用 React 組件庫**策略，支援多平台部署：
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        UI 架構 (共用組件庫)                              │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   ┌─────────────────────────────────────────────────────────────────┐   │
+│   │              @medvision-mcp/canvas (npm package)                │   │
+│   │   ┌───────────┐ ┌──────────────┐ ┌────────────┐ ┌───────────┐   │   │
+│   │   │ ImageView │ │ AnnotateTool │ │ ZoomPanCtl │ │ LayerMgr  │   │   │
+│   │   └───────────┘ └──────────────┘ └────────────┘ └───────────┘   │   │
+│   │   React + Fabric.js + TypeScript                                │   │
+│   └──────────────────────────────┬──────────────────────────────────┘   │
+│                                  │                                      │
+│          ┌───────────────────────┼───────────────────────┐              │
+│          ▼                       ▼                       ▼              │
+│   ┌──────────────┐       ┌──────────────────┐    ┌────────────────┐     │
+│   │ VS Code Ext  │       │ Standalone Web   │    │ Electron (opt) │     │
+│   │ (WebView)    │       │ (Vite/Next.js)   │    │ (future)       │     │
+│   │              │       │                  │    │                │     │
+│   │ 開發/測試用   │       │ 最終產品部署      │    │ 離線部署選項   │     │
+│   │ Copilot整合  │       │                  │    │                │     │
+│   └──────────────┘       └──────────────────┘    └────────────────┘     │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### I.7.1 組件庫結構
+
+```
+@medvision-mcp/canvas/
+├── package.json
+├── src/
+│   ├── index.ts                # 公開 API
+│   ├── components/
+│   │   ├── MedicalCanvas.tsx   # 主畫布組件
+│   │   ├── ImageViewer.tsx     # DICOM/PNG 顯示
+│   │   ├── AnnotationLayer.tsx # 標記圖層
+│   │   ├── ToolPalette.tsx     # 工具選板
+│   │   ├── LayerPanel.tsx      # 圖層管理
+│   │   └── MiniMap.tsx         # 縮圖導航
+│   ├── hooks/
+│   │   ├── useMCP.ts           # MCP 通訊 hook
+│   │   ├── useCanvas.ts        # Canvas 操作 hook
+│   │   ├── useAnnotations.ts   # 標記管理 hook
+│   │   └── useSession.ts       # Session 狀態 hook
+│   ├── types/
+│   │   └── annotations.ts      # TypeScript 定義
+│   └── utils/
+│       ├── fabricHelpers.ts    # Fabric.js 工具
+│       └── dicomLoader.ts      # DICOM 載入
+├── dist/                       # 打包輸出
+└── README.md
+```
+
+---
+
+### I.8 Canvas 標記類型定義
+
+#### I.8.1 支援的標記類型
+
+| 類型 | 用途 | 用戶可畫 | Agent 可生成 |
+|:-----|:-----|:---------|:-------------|
+| `bbox` | 矩形框選 | ✅ | ✅ |
+| `polygon` | 多邊形輪廓 | ✅ | ✅ |
+| `freehand` | 手繪線條 | ✅ | ❌ |
+| `mask` | 分割遮罩 (SAM3) | ❌ | ✅ |
+| `point` | 點標記 | ✅ | ✅ |
+| `text` | 文字標註 | ✅ | ✅ |
+
+#### I.8.2 TypeScript 定義
+
+```typescript
+// @medvision-mcp/canvas/src/types/annotations.ts
+
+type AnnotationType = 
+  | 'bbox'          // 矩形框
+  | 'polygon'       // 多邊形輪廓
+  | 'freehand'      // 手繪線條
+  | 'mask'          // 分割遮罩 (from SAM3)
+  | 'point'         // 點標記
+  | 'text';         // 文字標註
+
+type AnnotationSource = 'user' | 'agent';
+
+interface AnnotationStyle {
+  color: string;        // e.g., "#FF0000"
+  opacity: number;      // 0-1
+  strokeWidth: number;  // pixels
+  fill: boolean;        // 是否填充
+  lineDash?: number[];  // 虛線樣式
+}
+
+interface Annotation {
+  id: string;
+  type: AnnotationType;
+  source: AnnotationSource;
+  timestamp: string;
+  
+  // 幾何資料 (根據 type)
+  coordinates?: [number, number, number, number];  // bbox: [x1, y1, x2, y2]
+  points?: [number, number][];                     // polygon/freehand/point
+  mask?: {
+    data: string;       // base64 encoded binary mask
+    width: number;
+    height: number;
+  };
+  textContent?: string; // text 類型的文字內容
+  textPosition?: [number, number];  // text 位置
+  
+  // 標註資訊
+  label?: string;
+  description?: string;
+  confidence?: number;  // Agent 標記的信心度 (0-1)
+  finding?: string;     // 對應的臨床發現
+  
+  // 顯示樣式
+  style: AnnotationStyle;
+  
+  // 互動狀態
+  visible: boolean;
+  locked: boolean;
+  interactive: boolean;  // 點擊可展開詳情
+  
+  // 關聯
+  relatedAnnotationIds?: string[];  // 關聯的其他標記
+  suggestedBy?: string;  // 由誰建議 (agent/user annotation id)
+}
+
+interface CanvasState {
+  sessionId: string;
+  imageId: string;
+  annotations: Annotation[];
+  selectedAnnotationId?: string;
+  zoom: number;
+  pan: { x: number; y: number };
+  activeTool: 'select' | 'bbox' | 'polygon' | 'freehand' | 'point' | 'text';
+}
+```
+
+#### I.8.3 Agent 推送標記範例
+
+```python
+# Agent 分析完成後推送標記到 Canvas
+await mcp_client.call_tool("push_to_canvas", {
+    "session_id": "abc123",
+    "action": "add_annotations",
+    "payload": {
+        "annotations": [
+            {
+                "id": "agent-finding-001",
+                "type": "bbox",
+                "source": "agent",
+                "coordinates": [120, 80, 200, 160],
+                "label": "右肺結節",
+                "description": "約 1.2cm 的實質性結節，邊緣清楚",
+                "confidence": 0.92,
+                "finding": "nodule",
+                "style": {
+                    "color": "#FF6B6B",
+                    "opacity": 0.8,
+                    "strokeWidth": 2,
+                    "fill": False
+                },
+                "interactive": True
+            },
+            {
+                "id": "agent-mask-001",
+                "type": "mask",
+                "source": "agent",
+                "mask": {
+                    "data": "base64...",  # SAM3 輸出
+                    "width": 512,
+                    "height": 512
+                },
+                "label": "結節精確輪廓",
+                "style": {
+                    "color": "#FF6B6B",
+                    "opacity": 0.4,
+                    "strokeWidth": 0,
+                    "fill": True
+                }
+            }
+        ],
+        "related_suggestions": [
+            {
+                "region": {"type": "bbox", "coordinates": [300, 200, 380, 280]},
+                "note": "建議也檢查這個區域，可能有相似病變",
+                "style": {
+                    "color": "#FFE66D",
+                    "opacity": 0.6,
+                    "strokeWidth": 2,
+                    "lineDash": [5, 5]
+                }
+            }
+        ]
+    }
+})
+```
+
+---
+
+### I.9 A2A vs 純 MCP 雙模式
+
+MedVision MCP 同時支援兩種調用模式：
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        雙模式架構                                        │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│   外部 Agent (Claude Opus / GPT)                                        │
+│         │                                                               │
+│         ├─────────── 模式 A: 純 MCP ──────────────────────┐             │
+│         │            直接調用工具                          ▼             │
+│         │       ┌─────────────────────────────────────────────┐         │
+│         │       │    MCP Server (medvision-mcp)               │         │
+│         │       │    ┌─────────┬─────────┬─────────────────┐  │         │
+│         │       │    │analyze_ │ask_     │analyze_selected_│  │         │
+│         │       │    │image    │about_   │region           │  │         │
+│         ▼       │    │         │image    │                 │  │         │
+│  ┌─────────────►│◄───┴─────────┴─────────┴─────────────────┘  │         │
+│  │              └─────────────────────────────────────────────┘         │
+│  │                                                                      │
+│  │              模式 B: A2A (委託)                                       │
+│  │              ┌─────────────────────────────────────────────┐         │
+│  │              │  invoke_medical_agent                       │         │
+│  └──────────────►    ┌────────────────────────────────────┐   │         │
+│                 │    │ Internal Agent (LangGraph)          │   │         │
+│                 │    │  - 任務分解                          │   │         │
+│                 │    │  - 呼叫多 tools                      │   │         │
+│                 │    │  - 對話記憶                          │   │         │
+│                 │    │  - 主動建議                          │   │         │
+│                 │    └────────────────────────────────────┘   │         │
+│                 └─────────────────────────────────────────────┘         │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+#### I.9.1 模式選擇指引
+
+| 場景 | 推薦模式 | 原因 |
+|:-----|:---------|:-----|
+| 單一影像快速分類 | 純 MCP | 外部 Agent 直接調用 `analyze_image` |
+| 單一問答 | 純 MCP | 直接調用 `ask_about_image` |
+| 完整診斷流程 | A2A | 需要多工具編排和上下文記憶 |
+| 互動式區域探索 | A2A | 需要記住先前的發現和建議 |
+| 批量處理多張影像 | 純 MCP | 外部 Agent 自行編排迴圈 |
+| 與 Canvas 深度互動 | A2A | 需要主動推送標記和建議 |
+
+#### I.9.2 handoff 機制
+
+外部 Agent（如 Claude）可透過 handoff 將控制權轉移給內建 Agent：
+
+```python
+# Claude 發起 handoff
+result = await mcp_client.call_tool("invoke_medical_agent", {
+    "session_id": "abc123",
+    "task": "完整分析這張影像，並與用戶互動確認發現",
+    "mode": "interactive",  # 啟用互動模式
+    "handoff": {
+        "return_on": ["user_confirmation", "analysis_complete"],
+        "max_turns": 10,
+        "preserve_context": True
+    }
+})
+
+# Internal Agent 接管後：
+# 1. 執行分析
+# 2. 推送標記到 Canvas
+# 3. 等待用戶回應
+# 4. 繼續對話
+# 5. 完成後返回控制權給 Claude
 ```
