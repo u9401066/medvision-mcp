@@ -86,8 +86,8 @@ medvision-mcp/
 ### Backend (Python)
 - **MCP**: mcp, fastmcp
 - **Database**: SQLAlchemy + aiosqlite
-- **Inference**: vLLM, Ollama, PyTorch
-- **Medical AI**: CheXagent, LLaVA-Med, MAIRA-2, SAM3
+- **Inference**: Ollama (主要), vLLM (高吞吐), PyTorch (分類/分割)
+- **Medical AI**: llava (VQA), DenseNet/PSPNet (分類/分割)
 
 ### Frontend (TypeScript)
 - **Framework**: React 18+
@@ -96,17 +96,98 @@ medvision-mcp/
 
 ---
 
-## Python 環境（uv 優先）
+## Ollama 使用指南
+
+> ✅ **首選推理引擎**：Ollama 提供 GPU 加速、自帶模型管理、下載速度快
+
+### 服務管理
+
+```bash
+# 啟動 Ollama 服務（容器環境）
+export OLLAMA_HOST=0.0.0.0:11434
+nohup ollama serve > /tmp/ollama.log 2>&1 &
+
+# 檢查服務狀態
+curl http://localhost:11434/api/version
+
+# 查看已下載模型
+ollama list
+```
+
+### 模型管理
+
+```bash
+# 下載視覺語言模型
+ollama pull llava:7b          # 通用 VLM (推薦)
+ollama pull llava:13b         # 更大更準
+ollama pull bakllava          # 多語言支援
+
+# 下載文本模型 (Agent 用)
+ollama pull llama3:8b         # 快速
+ollama pull qwen2:7b          # 中文支援
+
+# 刪除模型
+ollama rm model-name
+```
+
+### 程式碼調用
+
+```python
+import ollama
+
+# 圖片分析
+response = ollama.chat(
+    model='llava:7b',
+    messages=[{
+        'role': 'user',
+        'content': 'Describe this chest X-ray image.',
+        'images': ['/path/to/image.png']
+    }]
+)
+print(response['message']['content'])
+```
+
+### GPU 配置
+
+Ollama 自動偵測 CUDA GPU。如需手動配置：
+
+```bash
+export CUDA_VISIBLE_DEVICES=0        # 指定 GPU
+export OLLAMA_NUM_PARALLEL=4         # 並行請求數
+export OLLAMA_MAX_LOADED_MODELS=2    # 同時載入模型數
+```
+
+---
+
+## Python 環境（僅限 uv）
+
+> ⚠️ **禁止使用 pip**：所有 Python 套件管理必須使用 uv
 
 ```bash
 # 初始化環境
 uv venv
 uv sync --all-extras
 
-# 安裝依賴
+# 安裝依賴（不要用 pip！）
 uv add package-name
 uv add --dev pytest ruff mypy
+
+# 執行 Python
+uv run python script.py
+uv run pytest
+
+# 在已存在的 venv 中安裝（如 MedRAX）
+uv pip install package-name
+uv pip install -r requirements.txt
 ```
+
+### 常見錯誤修復
+
+| 錯誤 | 解決方案 |
+|------|----------|
+| `libGL.so.1 not found` | `uv pip install opencv-python-headless --force-reinstall` |
+| 網路 502/404 | 使用 `uv` 內建快取或離線模式 |
+| pip 指令 | 改用 `uv pip` 或 `uv add` |
 
 詳見：`.github/bylaws/python-environment.md`
 

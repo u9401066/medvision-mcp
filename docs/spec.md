@@ -1,6 +1,6 @@
 # MedVision MCP v2 架構規格書
 
-> 版本: 0.5.0  
+> 版本: 0.6.0  
 > 日期: 2026-02-02  
 > 狀態: Draft
 
@@ -8,6 +8,7 @@
 
 | 版本 | 日期 | 變更 |
 |:-----|:-----|:-----|
+| 0.6.0 | 2026-02-02 | 新增 Visual RAG 混合模式 (Mode B)：RAD-DINO + FAISS + DenseNet，`search_similar_cases`, `analyze_with_rag` 等工具 |
 | 0.5.0 | 2026-02-02 | 新增互動診斷流程設計、Canvas 標記類型定義、A2A vs 純 MCP 雙模式、已驗證模型狀態表 |
 | 0.4.0 | 2026-02-02 | 架構重構：MCP Server + Multi-Model Tools + 內建 Medical Agent (A2A)；新增 Canvas 繪畫工作區規格 |
 | 0.3.1 | 2026-01-28 | 新增完整 AI 模型清單：Radiology VLM、Medical Encoders、CT Segmentation、Pathology Foundation Models |
@@ -850,6 +851,174 @@ def request_user_input(
         user_input: 用戶的輸入結果
     """
 ```
+
+---
+
+### 4.8 Visual RAG Tools (混合模式 B)
+
+Visual RAG 採用**混合模式**：DenseNet 快速分類 + RAG 參考檢索，讓外部 Agent 綜合判斷。
+
+#### 架構概述
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│                     Visual RAG 混合模式 (Mode B)                          │
+├──────────────────────────────────────────────────────────────────────────┤
+│                                                                          │
+│  輸入影像                                                                 │
+│      │                                                                   │
+│      ├───────────────────────┬───────────────────────┐                   │
+│      ▼                       ▼                       ▼                   │
+│  ┌──────────┐         ┌──────────────┐        ┌──────────────┐           │
+│  │ DenseNet │         │  RAD-DINO    │        │   PSPNet     │           │
+│  │ 快速分類  │         │  Embedding   │        │   器官分割   │           │
+│  │ (18類)   │         │  (768-dim)   │        │   (14器官)   │           │
+│  └────┬─────┘         └──────┬───────┘        └──────┬───────┘           │
+│       │                      │                       │                   │
+│       │               ┌──────▼───────┐               │                   │
+│       │               │    FAISS     │               │                   │
+│       │               │  向量檢索    │               │                   │
+│       │               └──────┬───────┘               │                   │
+│       │                      │                       │                   │
+│       ▼                      ▼                       ▼                   │
+│  ┌──────────────────────────────────────────────────────────────────┐    │
+│  │                    聚合結果返回給 Agent                           │    │
+│  │  {                                                               │    │
+│  │    "quick_classification": {...},  // DenseNet 結果              │    │
+│  │    "similar_cases": [...],         // RAG 相似案例+報告          │    │
+│  │    "segmentation": {...},          // PSPNet 器官分割            │    │
+│  │    "aggregated_labels": [...]      // 加權投票標籤               │    │
+│  │  }                                                               │    │
+│  └──────────────────────────────────────────────────────────────────┘    │
+│       │                                                                  │
+│       ▼                                                                  │
+│  ┌──────────────────────────────────────────────────────────────────┐    │
+│  │           外部 Agent (Claude/GPT) 綜合生成報告                    │    │
+│  └──────────────────────────────────────────────────────────────────┘    │
+│                                                                          │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+#### `search_similar_cases`
+
+```python
+@mcp.tool
+def search_similar_cases(
+    session_id: str,
+    image_id: Optional[str] = None,
+    top_k: int = 5,
+    include_reports: bool = True,
+    include_embeddings: bool = False
+) -> Dict:
+    """
+    使用 Visual RAG 搜尋相似歷史案例。
+    
+    技術棧:
+    - RAD-DINO: 影像編碼 (microsoft/rad-dino, 350MB)
+    - FAISS: 向量檢索 (CPU/GPU)
+    - Reference DB: MIMIC-CXR embeddings + reports
+    
+    Args:
+        session_id: Session ID
+        image_id: 影像 ID (None = 當前影像)
+        top_k: 返回相似案例數量
+        include_reports: 是否包含參考報告全文
+        include_embeddings: 是否返回 embedding 向量
+    
+    Returns:
+        similar_cases: 相似案例列表
+            - case_id: 案例 ID
+            - similarity: 相似度 (0-1)
+            - report: 報告文字 (如 include_reports=True)
+            - findings: 主要發現
+            - labels: 標籤列表
+            - patient_info: 去識別化患者資訊
+        aggregated_labels: 加權投票後的建議標籤
+            - label: 標籤名稱
+            - confidence: 信心度 (基於相似度加權)
+            - supporting_cases: 支持此標籤的案例數
+        search_metadata:
+            - index_size: 向量庫大小
+            - search_time_ms: 檢索耗時
+    """
+```
+
+#### `analyze_with_rag`
+
+```python
+@mcp.tool
+def analyze_with_rag(
+    session_id: str,
+    image_id: Optional[str] = None,
+    mode: Literal["quick", "full", "rag_only"] = "full",
+    top_k: int = 5
+) -> Dict:
+    """
+    混合模式分析：DenseNet 分類 + RAG 檢索。
+    
+    Modes:
+        - quick: 只執行 DenseNet 分類 (最快)
+        - full: DenseNet + RAG + PSPNet (完整)
+        - rag_only: 只執行 RAG 檢索 (無模型限制)
+    
+    Returns:
+        quick_classification: DenseNet 分類結果 (18 類)
+            - predictions: [{"label": str, "probability": float}, ...]
+            - top_finding: 最高機率發現
+        similar_cases: RAG 相似案例 (同 search_similar_cases)
+        aggregated_labels: 綜合建議標籤
+        segmentation: 器官分割結果 (如 mode=full)
+        suggested_prompt: 建議給 LLM 的報告生成 prompt
+    """
+```
+
+#### `build_rag_index`
+
+```python
+@mcp.tool
+def build_rag_index(
+    source: Literal["mimic-cxr", "chexpert", "custom"],
+    data_path: Optional[str] = None,
+    index_path: str = "./rag_index",
+    batch_size: int = 32
+) -> Dict:
+    """
+    建立/更新 RAG 向量索引。
+    
+    Args:
+        source: 資料來源
+            - mimic-cxr: MIMIC-CXR 資料集 (需 PhysioNet 授權)
+            - chexpert: CheXpert 資料集
+            - custom: 自定義資料 (需提供 data_path)
+        data_path: 自定義資料路徑 (CSV with image_path, report columns)
+        index_path: 索引儲存路徑
+        batch_size: 編碼批次大小
+    
+    Returns:
+        status: 建立狀態
+        index_size: 索引大小
+        build_time_s: 建立耗時
+    """
+```
+
+#### 模型清單 (Visual RAG)
+
+| 模型 | HuggingFace ID | 大小 | 用途 |
+|:-----|:---------------|:-----|:-----|
+| RAD-DINO | `microsoft/rad-dino` | ~350MB | 影像編碼 |
+| DenseNet-121 | torchxrayvision 內建 | ~30MB | 快速分類 |
+| PSPNet | torchxrayvision 內建 | ~50MB | 器官分割 |
+| FAISS | faiss-cpu/faiss-gpu | - | 向量檢索 |
+
+#### 優勢
+
+| 面向 | 傳統模型 | Visual RAG 混合 |
+|:-----|:---------|:----------------|
+| **類別數** | 固定 18 類 | **無限** (依參考庫) |
+| **可解釋** | ❌ 黑盒 | ✅ 有參考來源 |
+| **報告品質** | 模型決定 | **真實報告參考** |
+| **擴展性** | 換模型 | 加參考資料 |
+| **下載量** | ~15GB | **~400MB** |
 
 ---
 
